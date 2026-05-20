@@ -106,7 +106,7 @@ int main()
     spherePBD->initialize();
 
     
-    /*
+    
     float maxY = -1e9f;
     for (const auto& v : yourOwnModel.mesh.vertices) {
         if (v.Position.y > maxY) {
@@ -122,7 +122,7 @@ int main()
             parts[i].invMass = 0.0f; 
         }
     }
-    */
+    
 
 
 
@@ -198,14 +198,22 @@ int main()
         glm::vec3 gravity = glm::vec3(0.0f, 0.0f, 0.0f);
         float damping = 0.00f;
 
+        const int SUB_STEPS = 2;
+        const int PBD_ITERATIONS = 2; // 비눗방울처럼 팽팽하려면 최소 20 이상 권장
+
         while (accumulator >= FIXED_DT) {
-            float step = 2;
+            float subDt = FIXED_DT / SUB_STEPS;
             if (spherePBD) {
-                for (int i = 0; i < step; i++) {
-                    spherePBD->step(FIXED_DT / step, step, gravity, damping);
+                for (int i = 0; i < SUB_STEPS; i++) {
+                    // 솔버 이터레이션을 2에서 20으로 증가시켜 파라미터 전달
+                    spherePBD->step(subDt, PBD_ITERATIONS, gravity, damping);
                 }
             }
-            accumulator -= FIXED_DT; 
+            accumulator -= FIXED_DT;
+        }
+
+        if (spherePBD) {
+            spherePBD->applyToMesh();
         }
 
 

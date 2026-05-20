@@ -129,13 +129,23 @@ void main()
         specular = light.color * spec * k_s;
     }
     
-    vec3 finalColor = ambient + (1.0 - shadow) * (diffuse + specular);
+    vec3 result;
     
-    //debug
-    if (debugThickness > 0.5) {
-        FragColor = vec4(VertexColor, 1.0); 
+    if (debugThickness > 0.5f) {
+        // 1. 비눗방울 렌더링 (PBD 간섭색 적용)
+        float lightInfluence = 0.5;
+        
+        // 텍스처(color) 대신 VertexColor에 조명 밝기(diff * light.color)만 곱합니다.
+        vec3 bubbleDiffuse = VertexColor * diff * light.color; 
+        
+        // 본래 색상(VertexColor)과 조명 받은 색상을 섞고 하이라이트를 더합니다.
+        result = mix(VertexColor, bubbleDiffuse, lightInfluence) + specular;
     } else {
-        FragColor = vec4(finalColor, 1.0); // 원래 조명 결과 출력
+        // 2. 일반 물체 렌더링 (기존 방식)
+        result = ambient + diffuse + specular;
     }
+
+    // 최종 출력
+    FragColor = vec4(result, 1.0);
 
 }

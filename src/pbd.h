@@ -21,6 +21,11 @@ struct PBDConstraint {
     float restLength;
 };
 
+struct CotWeight {
+    unsigned int j;
+    float w;
+};
+
 class PBDSolver {
 public:
     PBDSolver(Mesh* mesh);
@@ -36,6 +41,8 @@ public:
     std::vector<PBDParticle>& particles() { return m_particles; }
     std::vector<PBDConstraint>& constraints() { return m_constraints; }
 
+    void solveThicknessConstraints(const std::vector<float>& currentAreas); // 인자 확인
+
 private:
     Mesh* m_mesh;
     std::vector<PBDParticle> m_particles;
@@ -50,5 +57,8 @@ private:
     void recomputeNormals();
     
     void integrateThickness(float dt);
-    void solveThicknessConstraints(const std::vector<float>& currentAreas);
+
+    std::vector<std::vector<CotWeight>> m_cotWeights;
+    void computeCotangentWeights();
+
 };

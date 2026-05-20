@@ -1,5 +1,6 @@
 #include "pbd.h"
 #include <unordered_set>
+#include <unordered_map>
 #include <tuple>
 #include <algorithm>
 #include <glm/gtc/type_ptr.hpp>
@@ -60,6 +61,8 @@ void PBDSolver::initialize()
     }
 
     buildConstraintsFromTriangles();
+
+    computeCotangentWeights();
 }
 
 struct EdgeKey {
@@ -75,6 +78,46 @@ struct EdgeHash {
         return (size_t)k.a * 1000003u + k.b;
     }
 };
+
+void PBDSolver::computeCotangentWeights()
+{
+    m_cotWeights.assign(m_particles.size(), std::vector<CotWeight>());
+    std::vector<std::unordered_map<unsigned int, float>> weightMatrix(m_particles.size());
+
+    for (size_t i = 0; i + 2 < m_mesh->indices.size(); i += 3) {
+        unsigned int i0 = m_mesh->indices[i];
+        unsigned int i1 = m_mesh->indices[i + 1];
+        unsigned int i2 = m_mesh->indices[i + 2];
+
+        glm::vec3 p0 = m_mesh->vertices[i0].Position;
+        glm::vec3 p1 = m_mesh->vertices[i1].Position;
+        glm::vec3 p2 = m_mesh->vertices[i2].Position;
+
+        // 코탄젠트 계산 람다 함수 (dot(a,b) / length(cross(a,b)))
+        auto cotangent = [](const glm::vec3& a, const glm::vec3& b, const glm::vec3& c) {
+            glm::vec3 ba = a - b;
+            glm::vec3 bc = c - b;
+            float cosT = glm::dot(ba, bc);
+            float sinT = glm::length(glm::cross(ba, bc));
+            return cosT / (sinT + 1e-6f);
+            };
+
+        float cot0 = cotangent(p1, p0, p2);
+        float cot1 = cotangent(p2, p1, p0);
+        float cot2 = cotangent(p0, p2, p1);
+
+        weightMatrix[i0][i1] += 0.5f * cot2; weightMatrix[i1][i0] += 0.5f * cot2;
+        weightMatrix[i1][i2] += 0.5f * cot0; weightMatrix[i2][i1] += 0.5f * cot0;
+        weightMatrix[i2][i0] += 0.5f * cot1; weightMatrix[i0][i2] += 0.5f * cot1;
+    }
+
+    for (size_t i = 0; i < weightMatrix.size(); ++i) {
+        for (auto const& pair : weightMatrix[i]) {
+            float clampedW = std::max(pair.second, 0.0f); // 물리적 불안정(둔각) 방지
+            m_cotWeights[i].push_back({ pair.first, clampedW });
+        }
+    }
+}
 
 void PBDSolver::buildConstraintsFromTriangles()
 {
@@ -186,56 +229,47 @@ void PBDSolver::recomputeNormals()
     }
 }
 
+
 void PBDSolver::step(float dt, int solverIterations, const glm::vec3& gravity, float damping)
 {
     recomputeNormals();
 
-    // 1. 공기압(Pressure) 적용: 비눗방울 팽창력
-    float pressure = 2.0f;
+    float internalPressure = 2.0f;     // 비눗방울 팽창력 (내부 기압)
+    float surfaceTension = 10.0f;      // 표면 장력 (곡률 복원력)
+
     for (size_t i = 0; i < m_particles.size(); ++i) {
         if (m_particles[i].invMass > 0.0f) {
             m_particles[i].acceleration += gravity;
-            m_particles[i].acceleration += m_mesh->vertices[i].Normal * pressure;
+
+            // 1. 내부 압력 팽창 (법선 방향)
+            m_particles[i].acceleration += m_mesh->vertices[i].Normal * internalPressure;
+
+            // 2. 표면 장력 (평균 곡률 H 기반 복원력)
+            glm::vec3 curvatureForce(0.0f);
+            float weightSum = 0.0f;
+            for (auto& cw : m_cotWeights[i]) {
+                curvatureForce += cw.w * (m_particles[cw.j].position - m_particles[i].position);
+                weightSum += cw.w;
+            }
+            if (weightSum > 1e-6f) {
+                curvatureForce /= weightSum;
+            }
+            // 곡률 벡터(curvatureForce)는 표면적을 줄이려는 방향(중심)을 향함
+            m_particles[i].acceleration += surfaceTension * curvatureForce;
         }
     }
 
-    // 2. 물리적 위치 이동 및 파동 흐름
+    // 1. Move particles based on velocity and acceleration
     integrate(dt, damping);
+
+    // 2. Enforce structural integrity (distance constraints)
+    solveConstraints(solverIterations);
+
+    // 3. (Optional) Update thickness for the interference colors
     integrateThickness(dt);
 
-    // 3. 제약 조건 반복 해결 (형태 + 두께 부피)
-    for (int i = 0; i < solverIterations; ++i) {
-        solveConstraints(1); // 1번 풀고
 
-        // [핵심] 매 iteration마다 실시간 면적을 다시 계산합니다.
-        std::vector<float> currentAreas(m_particles.size(), 0.0f);
-        for (size_t j = 0; j + 2 < m_mesh->indices.size(); j += 3) {
-            unsigned int i0 = m_mesh->indices[j];
-            unsigned int i1 = m_mesh->indices[j + 1];
-            unsigned int i2 = m_mesh->indices[j + 2];
 
-            float triArea = 0.5f * glm::length(glm::cross(
-                m_particles[i1].position - m_particles[i0].position,
-                m_particles[i2].position - m_particles[i0].position));
-
-            currentAreas[i0] += triArea / 3.0f;
-            currentAreas[i1] += triArea / 3.0f;
-            currentAreas[i2] += triArea / 3.0f;
-        }
-
-        // 실시간 면적을 바탕으로 엄밀한 PBD 두께 보정
-        solveThicknessConstraints(currentAreas);
-    }
-
-    // 4. 속도 갱신 및 질량 커플링
-    for (auto& p : m_particles) {
-        p.thicknessVelocity = (p.thickness - p.prevThickness) / dt;
-        if (p.invMass > 0.0f) {
-            float mass = p.baseArea * p.thickness * 100.0f;
-            p.invMass = 1.0f / (mass + 1e-6f);
-        }
-    }
-    applyToMesh();
 }
 
 void PBDSolver::applyToMesh()
@@ -243,33 +277,23 @@ void PBDSolver::applyToMesh()
     if (!m_mesh) return;
     size_t n = std::min(m_particles.size(), m_mesh->vertices.size());
 
-    // [핵심] 파동의 진폭이 매우 작으므로, 범위를 아주 좁게(민감하게) 설정해야 합니다!
-    float baseT = 0.05f;             // 초기 기본 두께
-    float waveAmplitude = 0.001f;    // 감지할 최대 두께 변화량 (민감도)
-    float minT = baseT - waveAmplitude; // 0.048f
-    float maxT = baseT + waveAmplitude; // 0.052f
+    float baseT = 0.05f;
 
     for (size_t i = 0; i < n; ++i) {
         m_mesh->vertices[i].Position = m_particles[i].position;
 
-        float thickness = m_particles[i].thickness;
+        // 두께 변화량(0.048 ~ 0.052)을 시각적으로 유의미한 나노미터 단위(300nm ~ 700nm)로 매핑
+        float mappedNm = 500.0f + (m_particles[i].thickness - baseT) * 100000.0f;
 
-        // 정규화 (0.0 ~ 1.0)
-        float t = (thickness - minT) / (maxT - minT);
-        t = glm::clamp(t, 0.0f, 1.0f);
+        // 위상차 연산 (주기: ~100nm)
+        float phase = fmod(mappedNm / 100.0f, 1.0f) * 2.0f * glm::pi<float>();
 
-        glm::vec3 color;
-        // 직관적인 3색 그라데이션: 파랑(얇음) -> 옅은 회백색(기본) -> 빨강(두꺼움)
-        if (t < 0.5f) {
-            // 0.0 ~ 0.5 구간: 파란색에서 흰색으로
-            float blend = t * 2.0f;
-            color = glm::mix(glm::vec3(0.1f, 0.3f, 1.0f), glm::vec3(0.8f, 0.8f, 0.8f), blend);
-        }
-        else {
-            // 0.5 ~ 1.0 구간: 흰색에서 빨간색으로
-            float blend = (t - 0.5f) * 2.0f;
-            color = glm::mix(glm::vec3(0.8f, 0.8f, 0.8f), glm::vec3(1.0f, 0.2f, 0.1f), blend);
-        }
+        // 120도(2.094 rad), 240도(4.189 rad) 위상차를 둔 RGB 스펙트럼 근사
+        glm::vec3 color = glm::vec3(
+            0.5f + 0.5f * sin(phase),
+            0.5f + 0.5f * sin(phase + 2.094f),
+            0.5f + 0.5f * sin(phase + 4.189f)
+        );
 
         m_mesh->vertices[i].Color = color;
     }
@@ -285,59 +309,89 @@ void PBDSolver::addImpulse(unsigned int particleIdx, const glm::vec3& velocity)
 
     // 위치 충격
     m_particles[particleIdx].acceleration += velocity * 50.0f;
-
+    m_particles[particleIdx].thicknessVelocity += 0.05f;
 }
 
 void PBDSolver::integrateThickness(float dt)
 {
-    // 추천 디버깅 값: c2를 늘리면 파동이 빨라지고, k_damp를 낮추면 일렁임이 오래갑니다.
-    float c2 = 5.0f;    // 파동 속도를 50에서 150으로 상향 (색 변화 가속)
-    float k_damp = 0.001f; // 감쇠를 아주 낮추어 오랫동안 찰랑거리게 함
+    // 1. 파동 전파 속도 대폭 증가 (이웃에게 힘을 전달할 수 있도록 20000.0f로 설정)
+    float c2 = 200.0f;
+    float k_damp = 0.05f;  // 파동이 너무 영원히 지속되지 않도록 약간의 감쇠
 
+    // 2. In-place 업데이트 방지: 모든 파티클의 Laplacian(가속도)을 먼저 계산해서 임시 저장
+    std::vector<float> laplacians(m_particles.size(), 0.0f);
+
+    for (size_t i = 0; i < m_particles.size(); ++i) {
+        float laplacian = 0.0f;
+        float weightSum = 0.0f;
+
+        // 코탄젠트 가중치를 이용한 이산 라플라스-벨트라미 연산
+        for (auto& cw : m_cotWeights[i]) {
+            // 현재 프레임의 오리지널 thickness 끼리만 비교하도록 보장
+            laplacian += cw.w * (m_particles[cw.j].thickness - m_particles[i].thickness);
+            weightSum += cw.w;
+        }
+
+        if (weightSum > 1e-6f) {
+            laplacian /= weightSum;
+        }
+        laplacians[i] = laplacian;
+    }
+
+    // 3. 계산된 Laplacian을 바탕으로 모든 파티클을 일괄 업데이트
     for (size_t i = 0; i < m_particles.size(); ++i) {
         auto& p = m_particles[i];
 
-        float laplacian = 0.0f;
-        for (unsigned int neighborIdx : m_neighbors[i]) {
-            laplacian += (m_particles[neighborIdx].thickness - p.thickness);
-        }
-
-        float thicknessAccel = c2 * laplacian;
-
+        float thicknessAccel = c2 * laplacians[i];
         p.thicknessVelocity += thicknessAccel * dt;
         p.thicknessVelocity *= (1.0f - k_damp);
 
         p.prevThickness = p.thickness;
         p.thickness += p.thicknessVelocity * dt;
 
+        // 두께가 너무 얇아져서 위상차가 깨지는 현상 방지
         if (p.thickness < 0.001f) p.thickness = 0.001f;
     }
+
+    for (int iter = 0; iter < 2; ++iter) {
+        for (auto& c : m_constraints) {
+            // 거리가 0인 제약 = 완전히 동일한 위치에 겹쳐있는 분리된 정점(Weld)
+            if (c.restLength == 0.0f) {
+                auto& A = m_particles[c.a];
+                auto& B = m_particles[c.b];
+
+                // 두 정점의 두께와 파동 속도를 평균내서 똑같이 맞춰줌
+                float avgThickness = (A.thickness + B.thickness) * 0.5f;
+                float avgVel = (A.thicknessVelocity + B.thicknessVelocity) * 0.5f;
+
+                A.thickness = avgThickness;
+                B.thickness = avgThickness;
+                A.thicknessVelocity = avgVel;
+                B.thicknessVelocity = avgVel;
+            }
+        }
+    }
+
 }
 
-// 헤더(pbd.h)에도 함수 인자를 void solveThicknessConstraints(const std::vector<float>& currentAreas); 로 변경해주세요.
 void PBDSolver::solveThicknessConstraints(const std::vector<float>& currentAreas)
 {
-    // Constraint 식: C = Sum(h_i * A_i) - V_initial = 0
     float currentTotalVolume = 0.0f;
-    float gradientSumSq = 0.0f; // 분모 (Sum of gradients squared)
+    float totalArea = 0.0f;
 
     for (size_t i = 0; i < m_particles.size(); ++i) {
         currentTotalVolume += m_particles[i].thickness * currentAreas[i];
-        // h_i에 대한 편미분(Gradient)은 currentAreas[i] 입니다.
-        gradientSumSq += currentAreas[i] * currentAreas[i];
+        totalArea += currentAreas[i];
     }
 
     float C = currentTotalVolume - m_initialTotalVolume;
 
-    // 분모가 0이 되는 것 방지
-    if (gradientSumSq > 1e-6f) {
-        float lambda = C / gradientSumSq; // PBD의 라그랑주 승수(Lagrange Multiplier)
+    if (totalArea > 1e-6f) {
+        // 면적 팽창에 따른 피드백 루프를 끊고 일괄적으로 보정
+        float deltaH = -C / totalArea;
 
         for (size_t i = 0; i < m_particles.size(); ++i) {
-            // [정석 뺄셈] PBD 공식에 따른 올바른 보정량
-            float deltaH = -lambda * currentAreas[i];
             m_particles[i].thickness += deltaH;
-
             if (m_particles[i].thickness < 0.001f) m_particles[i].thickness = 0.001f;
         }
     }
