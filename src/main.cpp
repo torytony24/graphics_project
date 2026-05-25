@@ -34,8 +34,8 @@ bool isKeyboardDone[1024] = { 0 };
 // setting
 const unsigned int SCR_WIDTH = 800;
 const unsigned int SCR_HEIGHT = 600;
-const unsigned int SHADOW_WIDTH = 2048;
-const unsigned int SHADOW_HEIGHT = 2048;
+const unsigned int SHADOW_WIDTH = 1024;
+const unsigned int SHADOW_HEIGHT = 1024;
 const float planeSize = 15.f;
 
 // camera
@@ -157,6 +157,8 @@ int main()
     lightingShader.setInt("material.specularSampler", 1);
     lightingShader.setInt("material.normalSampler", 2);
     lightingShader.setInt("depthMapSampler", 3);
+    lightingShader.setInt("skyboxTexture", 4);
+    lightingShader.setInt("thinFilmLUT", 5);
     lightingShader.setFloat("material.shininess", 64.f);    // set shininess to constant value.
 
 
@@ -305,6 +307,65 @@ int main()
 
         glBindVertexArray(0);
         glDepthFunc(GL_LESS);
+
+        lightingShader.use();
+        lightingShader.setFloat("filmTime", currentTime);
+        lightingShader.setFloat("debugThickness", 1.0f);
+        lightingShader.setFloat("useNormalMap", 0.0f);
+        lightingShader.setFloat("useSpecularMap", 0.0f);
+        lightingShader.setFloat("useShadow", 0.0f);
+        lightingShader.setFloat("filmThicknessScale", 9000.0f);
+        lightingShader.setFloat("filmRefractiveIndex", 1.34f);
+        lightingShader.setFloat("filmAlpha", 0.18f);
+        lightingShader.setFloat("filmR0", 0.025f);
+        lightingShader.setFloat("filmDeltaMax", 1200.0f);
+        lightingShader.setFloat("filmIridescenceStrength", 2.25f);
+        lightingShader.setFloat("filmRefractionStrength", 0.82f);
+        lightingShader.setFloat("filmFresnelStrength", 1.0f);
+        lightingShader.setFloat("filmReflectionIntensity", 0.85f);
+        lightingShader.setFloat("filmRoughness", 0.16f);
+
+        glActiveTexture(GL_TEXTURE4);
+        glBindTexture(GL_TEXTURE_CUBE_MAP, skyboxTexture.textureID);
+        glActiveTexture(GL_TEXTURE5);
+        glBindTexture(GL_TEXTURE_2D, thinFilmLUT.ID);
+
+        glDisable(GL_CULL_FACE);
+        glDepthMask(GL_FALSE);
+
+        auto itSpherePBD = scene.entities.find(&yourOwnModel);
+        if (itSpherePBD != scene.entities.end()) {
+            for (Entity* entity : itSpherePBD->second) {
+                lightingShader.setMat4("world", entity->getModelMatrix());
+                yourOwnModel.bind();
+                glDrawElements(GL_TRIANGLES, yourOwnModel.mesh.indices.size(), GL_UNSIGNED_INT, 0);
+            }
+        }
+
+        glDepthMask(GL_TRUE);
+        lightingShader.setFloat("debugThickness", 0.0f);
+        lightingShader.setFloat("useShadow", useShadow ? 1.0f : 0.0f);
+
+        if (showWireframe) {
+            glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+            glDisable(GL_CULL_FACE);
+            glLineWidth(1.0f);
+
+            wireframeShader.use();
+            wireframeShader.setMat4("projection", projection);
+            wireframeShader.setMat4("view", view);
+
+            auto itSphere = scene.entities.find(&yourOwnModel);
+            if (itSphere != scene.entities.end()) {
+                for (Entity* entity : itSphere->second) {
+                    wireframeShader.setMat4("model", entity->getModelMatrix());
+                    yourOwnModel.bind();
+                    glDrawElements(GL_TRIANGLES, yourOwnModel.mesh.indices.size(), GL_UNSIGNED_INT, 0);
+                }
+            }
+
+            glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+        }
 
         // glfw: swap buffers and poll IO events (keys pressed/released, mouse moved etc.)
         // -------------------------------------------------------------------------------

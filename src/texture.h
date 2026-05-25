@@ -7,6 +7,9 @@
 #include <fstream>
 #include <sstream>
 #include <iostream>
+#include <vector>
+#include <cmath>
+#include <algorithm>
 #include <glad/glad.h>
 #include <GLFW/glfw3.h>
 class Texture{
@@ -44,6 +47,52 @@ public:
             std::cout << "Failed to load texture" << std::endl;
         }
         stbi_image_free(data);
+    }
+};
+
+class ThinFilmLUTTexture
+{
+public:
+    unsigned int ID;
+    int width;
+    int height;
+
+    ThinFilmLUTTexture(int lutWidth = 256, int lutHeight = 128)
+        : ID(0), width(lutWidth), height(lutHeight)
+    {
+        std::vector<unsigned char> pixels(width * height * 3);
+
+        for (int y = 0; y < height; ++y) {
+            float cosTheta = static_cast<float>(y) / static_cast<float>(height - 1);
+            for (int x = 0; x < width; ++x) {
+                float deltaNm = 1200.0f * static_cast<float>(x) / static_cast<float>(width - 1);
+                float angleBoost = 0.58f + 0.42f * cosTheta;
+                float optical = deltaNm * angleBoost;
+
+                float r = 0.5f + 0.5f * std::cos(6.2831853f * optical / 680.0f + 0.0f);
+                float g = 0.5f + 0.5f * std::cos(6.2831853f * optical / 540.0f + 2.1f);
+                float b = 0.5f + 0.5f * std::cos(6.2831853f * optical / 440.0f + 4.2f);
+
+                float whitening = 0.22f + 0.18f * (1.0f - cosTheta);
+                r = r * (1.0f - whitening) + whitening;
+                g = g * (1.0f - whitening) + whitening;
+                b = b * (1.0f - whitening) + whitening;
+
+                int idx = (y * width + x) * 3;
+                pixels[idx + 0] = static_cast<unsigned char>(std::max(0.0f, std::min(1.0f, r)) * 255.0f);
+                pixels[idx + 1] = static_cast<unsigned char>(std::max(0.0f, std::min(1.0f, g)) * 255.0f);
+                pixels[idx + 2] = static_cast<unsigned char>(std::max(0.0f, std::min(1.0f, b)) * 255.0f);
+            }
+        }
+
+        glGenTextures(1, &ID);
+        glBindTexture(GL_TEXTURE_2D, ID);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, &pixels[0]);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glBindTexture(GL_TEXTURE_2D, 0);
     }
 };
 
