@@ -25,6 +25,7 @@ struct Vertex {
     glm::vec3 Tangent;
 
     glm::vec3 Color;
+    float Thickness;
 };
 
 
@@ -47,11 +48,11 @@ public:
         setupMesh();
     }
 
-    // ¾÷µ¥ÀÌÆ®µÈ Á¤Á¡ µ¥ÀÌÅÍ¸¦ GPU·Î ¾÷·Îµå
+    // ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Æ®ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ï¿½Í¸ï¿½ GPUï¿½ï¿½ ï¿½ï¿½ï¿½Îµï¿½
     void updateVertexBuffer()
     {
         glBindBuffer(GL_ARRAY_BUFFER, VBO);
-        // glBufferSubData: ±âÁ¸ ¹öÆÛ¿¡ »õ µ¥ÀÌÅÍ¸¦ µ¤¾î¾¸
+        // glBufferSubData: ï¿½ï¿½ï¿½ï¿½ ï¿½ï¿½ï¿½Û¿ï¿½ ï¿½ï¿½ ï¿½ï¿½ï¿½ï¿½ï¿½Í¸ï¿½ ï¿½ï¿½ï¿½î¾¸
         glBufferSubData(GL_ARRAY_BUFFER, 0, vertices.size() * sizeof(Vertex), &vertices[0]);
         glBindBuffer(GL_ARRAY_BUFFER, 0);
     }
@@ -98,6 +99,9 @@ private:
         glEnableVertexAttribArray(4);
 		glVertexAttribPointer(4, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, Color));
 
+        // vertex-wise soap-film thickness
+        glEnableVertexAttribArray(5);
+        glVertexAttribPointer(5, 1, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, Thickness));
 
         glBindVertexArray(0);
     }

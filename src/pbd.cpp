@@ -1,121 +1,186 @@
 #include "pbd.h"
-#include <unordered_set>
-#include <unordered_map>
-#include <tuple>
+
 #include <algorithm>
-#include <glm/gtc/type_ptr.hpp>
+#include <cmath>
+#include <unordered_map>
+#include <unordered_set>
+
+#include <glm/gtc/constants.hpp>
+
+namespace {
+struct EdgeKey {
+    unsigned int a;
+    unsigned int b;
+
+    EdgeKey(unsigned int x, unsigned int y)
+    {
+        if (x < y) {
+            a = x;
+            b = y;
+        } else {
+            a = y;
+            b = x;
+        }
+    }
+
+    bool operator==(const EdgeKey& other) const
+    {
+        return a == other.a && b == other.b;
+    }
+};
+
+struct EdgeKeyHash {
+    size_t operator()(const EdgeKey& edge) const
+    {
+        return static_cast<size_t>(edge.a) * 73856093u ^ static_cast<size_t>(edge.b) * 19349663u;
+    }
+};
+
+struct AdjacentFaces {
+    unsigned int opposite[2];
+    int count;
+
+    AdjacentFaces() : opposite{0, 0}, count(0) {}
+};
+
+float clamp01(float value)
+{
+    return std::max(0.0f, std::min(1.0f, value));
+}
+}
+
+StretchConstraint::StretchConstraint(unsigned int a, unsigned int b, float restLength, float stiffness)
+    : m_a(a), m_b(b), m_restLength(restLength), m_stiffness(clamp01(stiffness))
+{
+}
+
+void StretchConstraint::project(std::vector<PBDParticle>& particles) const
+{
+    PBDParticle& a = particles[m_a];
+    PBDParticle& b = particles[m_b];
+    const float w1 = a.inverseMass;
+    const float w2 = b.inverseMass;
+    const float wsum = w1 + w2;
+    if (wsum <= 0.0f) return;
+
+    const glm::vec3 delta = b.position - a.position;
+    const float length = glm::length(delta);
+    if (length <= 1e-6f) return;
+
+    const glm::vec3 correction = (length - m_restLength) * (delta / length) * m_stiffness;
+    if (w1 > 0.0f) a.position += correction * (w1 / wsum);
+    if (w2 > 0.0f) b.position -= correction * (w2 / wsum);
+}
+
+BendConstraint::BendConstraint(unsigned int a, unsigned int b, float restLength, float stiffness)
+    : m_a(a), m_b(b), m_restLength(restLength), m_stiffness(clamp01(stiffness))
+{
+}
+
+void BendConstraint::project(std::vector<PBDParticle>& particles) const
+{
+    PBDParticle& a = particles[m_a];
+    PBDParticle& b = particles[m_b];
+    const float w1 = a.inverseMass;
+    const float w2 = b.inverseMass;
+    const float wsum = w1 + w2;
+    if (wsum <= 0.0f) return;
+
+    const glm::vec3 delta = b.position - a.position;
+    const float length = glm::length(delta);
+    if (length <= 1e-6f) return;
+
+    const glm::vec3 correction = (length - m_restLength) * (delta / length) * m_stiffness;
+    if (w1 > 0.0f) a.position += correction * (w1 / wsum);
+    if (w2 > 0.0f) b.position -= correction * (w2 / wsum);
+}
 
 PBDSolver::PBDSolver(Mesh* mesh)
-    : m_mesh(mesh)
+    : m_mesh(mesh),
+      m_stretchStiffness(0.85f),
+      m_bendStiffness(0.15f),
+      m_damping(0.015f),
+      m_pressure(0.0f),
+      m_radiusStiffness(0.35f),
+      m_restCenter(0.0f),
+      m_restAverageRadius(1.0f)
 {
 }
 
 void PBDSolver::initialize()
 {
     m_particles.clear();
-    m_constraints.clear();
+    m_stretchConstraints.clear();
+    m_bendConstraints.clear();
+    m_neighbors.clear();
 
     if (!m_mesh) return;
 
     m_particles.resize(m_mesh->vertices.size());
     for (size_t i = 0; i < m_mesh->vertices.size(); ++i) {
-        const auto& v = m_mesh->vertices[i];
-        PBDParticle p;
-        p.position = v.Position;
-        p.prevPosition = v.Position;
-        p.acceleration = glm::vec3(0.0f);
-        p.invMass = 1.0f;
-        m_particles[i] = p;
+        const Vertex& vertex = m_mesh->vertices[i];
+        PBDParticle particle;
+        particle.position = vertex.Position;
+        particle.previousPosition = vertex.Position;
+        particle.restPosition = vertex.Position;
+        particle.velocity = glm::vec3(0.0f);
+        particle.force = glm::vec3(0.0f);
+        particle.inverseMass = 1.0f;
+        particle.thickness = 0.05f;
+        particle.previousThickness = 0.05f;
+        particle.thicknessVelocity = 0.0f;
+        particle.baseArea = 0.0f;
+        m_particles[i] = particle;
     }
 
-    m_neighbors.assign(m_particles.size(), std::vector<unsigned int>());
-    float initialThickness = 0.05f;
-
-    // [수정] 모든 정점의 baseArea를 1.0f로 두지 않고, 실제 초기 삼각형 면적으로 계산합니다.
+    m_restCenter = glm::vec3(0.0f);
     for (size_t i = 0; i < m_particles.size(); ++i) {
-        m_particles[i].thickness = initialThickness;
-        m_particles[i].prevThickness = initialThickness;
-        m_particles[i].thicknessVelocity = 0.0f;
-        m_particles[i].baseArea = 0.0f;
+        m_restCenter += m_particles[i].restPosition;
+    }
+    if (!m_particles.empty()) {
+        m_restCenter /= static_cast<float>(m_particles.size());
+    }
+
+    m_restAverageRadius = 0.0f;
+    for (size_t i = 0; i < m_particles.size(); ++i) {
+        m_restAverageRadius += glm::length(m_particles[i].restPosition - m_restCenter);
+    }
+    if (!m_particles.empty()) {
+        m_restAverageRadius /= static_cast<float>(m_particles.size());
     }
 
     for (size_t i = 0; i + 2 < m_mesh->indices.size(); i += 3) {
-        unsigned int i0 = m_mesh->indices[i];
-        unsigned int i1 = m_mesh->indices[i + 1];
-        unsigned int i2 = m_mesh->indices[i + 2];
+        const unsigned int i0 = m_mesh->indices[i];
+        const unsigned int i1 = m_mesh->indices[i + 1];
+        const unsigned int i2 = m_mesh->indices[i + 2];
 
-        glm::vec3 p0 = m_mesh->vertices[i0].Position;
-        glm::vec3 p1 = m_mesh->vertices[i1].Position;
-        glm::vec3 p2 = m_mesh->vertices[i2].Position;
-
-        // 삼각형의 면적 계산 후 각 정점에 1/3씩 분배
-        float triArea = 0.5f * glm::length(glm::cross(p1 - p0, p2 - p0));
-        m_particles[i0].baseArea += triArea / 3.0f;
-        m_particles[i1].baseArea += triArea / 3.0f;
-        m_particles[i2].baseArea += triArea / 3.0f;
-    }
-
-    m_initialTotalVolume = 0.0f;
-    for (size_t i = 0; i < m_particles.size(); ++i) {
-        m_initialTotalVolume += initialThickness * m_particles[i].baseArea;
+        const glm::vec3 p0 = m_mesh->vertices[i0].Position;
+        const glm::vec3 p1 = m_mesh->vertices[i1].Position;
+        const glm::vec3 p2 = m_mesh->vertices[i2].Position;
+        const float area = 0.5f * glm::length(glm::cross(p1 - p0, p2 - p0));
+        m_particles[i0].baseArea += area / 3.0f;
+        m_particles[i1].baseArea += area / 3.0f;
+        m_particles[i2].baseArea += area / 3.0f;
     }
 
     buildConstraintsFromTriangles();
-
-    computeCotangentWeights();
+    m_thinFilm.initialize(m_mesh, 0.05f);
+    recomputeNormals();
 }
 
-struct EdgeKey {
-    unsigned int a, b;
-    EdgeKey(unsigned int x, unsigned int y) {
-        if (x < y) { a = x; b = y; }
-        else { a = y; b = x; }
-    }
-    bool operator==(EdgeKey const& o) const { return a == o.a && b == o.b; }
-};
-struct EdgeHash {
-    size_t operator()(EdgeKey const& k) const noexcept {
-        return (size_t)k.a * 1000003u + k.b;
-    }
-};
-
-void PBDSolver::computeCotangentWeights()
+void PBDSolver::setStretchStiffness(float stiffness)
 {
-    m_cotWeights.assign(m_particles.size(), std::vector<CotWeight>());
-    std::vector<std::unordered_map<unsigned int, float>> weightMatrix(m_particles.size());
-
-    for (size_t i = 0; i + 2 < m_mesh->indices.size(); i += 3) {
-        unsigned int i0 = m_mesh->indices[i];
-        unsigned int i1 = m_mesh->indices[i + 1];
-        unsigned int i2 = m_mesh->indices[i + 2];
-
-        glm::vec3 p0 = m_mesh->vertices[i0].Position;
-        glm::vec3 p1 = m_mesh->vertices[i1].Position;
-        glm::vec3 p2 = m_mesh->vertices[i2].Position;
-
-        // 코탄젠트 계산 람다 함수 (dot(a,b) / length(cross(a,b)))
-        auto cotangent = [](const glm::vec3& a, const glm::vec3& b, const glm::vec3& c) {
-            glm::vec3 ba = a - b;
-            glm::vec3 bc = c - b;
-            float cosT = glm::dot(ba, bc);
-            float sinT = glm::length(glm::cross(ba, bc));
-            return cosT / (sinT + 1e-6f);
-            };
-
-        float cot0 = cotangent(p1, p0, p2);
-        float cot1 = cotangent(p2, p1, p0);
-        float cot2 = cotangent(p0, p2, p1);
-
-        weightMatrix[i0][i1] += 0.5f * cot2; weightMatrix[i1][i0] += 0.5f * cot2;
-        weightMatrix[i1][i2] += 0.5f * cot0; weightMatrix[i2][i1] += 0.5f * cot0;
-        weightMatrix[i2][i0] += 0.5f * cot1; weightMatrix[i0][i2] += 0.5f * cot1;
+    m_stretchStiffness = clamp01(stiffness);
+    for (size_t i = 0; i < m_stretchConstraints.size(); ++i) {
+        m_stretchConstraints[i].setStiffness(m_stretchStiffness);
     }
+}
 
-    for (size_t i = 0; i < weightMatrix.size(); ++i) {
-        for (auto const& pair : weightMatrix[i]) {
-            float clampedW = std::max(pair.second, 0.0f); // 물리적 불안정(둔각) 방지
-            m_cotWeights[i].push_back({ pair.first, clampedW });
-        }
+void PBDSolver::setBendStiffness(float stiffness)
+{
+    m_bendStiffness = clamp01(stiffness);
+    for (size_t i = 0; i < m_bendConstraints.size(); ++i) {
+        m_bendConstraints[i].setStiffness(m_bendStiffness);
     }
 }
 
@@ -123,276 +188,232 @@ void PBDSolver::buildConstraintsFromTriangles()
 {
     if (!m_mesh) return;
 
-    std::unordered_set<EdgeKey, EdgeHash> edges;
+    m_stretchConstraints.clear();
+    m_bendConstraints.clear();
+    m_neighbors.assign(m_particles.size(), std::vector<unsigned int>());
+
+    std::unordered_set<EdgeKey, EdgeKeyHash> uniqueEdges;
+    std::unordered_map<EdgeKey, AdjacentFaces, EdgeKeyHash> edgeFaces;
+
     for (size_t i = 0; i + 2 < m_mesh->indices.size(); i += 3) {
-        unsigned int i0 = m_mesh->indices[i];
-        unsigned int i1 = m_mesh->indices[i + 1];
-        unsigned int i2 = m_mesh->indices[i + 2];
+        const unsigned int i0 = m_mesh->indices[i];
+        const unsigned int i1 = m_mesh->indices[i + 1];
+        const unsigned int i2 = m_mesh->indices[i + 2];
 
-        EdgeKey e0(i0, i1), e1(i1, i2), e2(i2, i0);
-        edges.insert(e0); edges.insert(e1); edges.insert(e2);
-    }
+        const unsigned int edgeVerts[3][2] = {{i0, i1}, {i1, i2}, {i2, i0}};
+        const unsigned int oppositeVerts[3] = {i2, i0, i1};
 
-    m_constraints.reserve(edges.size());
-    for (auto const& e : edges) {
-        PBDConstraint c;
-        c.a = e.a;
-        c.b = e.b;
-        glm::vec3 pa = m_particles[c.a].position;
-        glm::vec3 pb = m_particles[c.b].position;
-        c.restLength = glm::length(pb - pa);
-        m_constraints.push_back(c);
+        for (int edgeIdx = 0; edgeIdx < 3; ++edgeIdx) {
+            EdgeKey edge(edgeVerts[edgeIdx][0], edgeVerts[edgeIdx][1]);
+            uniqueEdges.insert(edge);
 
-        m_neighbors[e.a].push_back(e.b);
-        m_neighbors[e.b].push_back(e.a);
-    }
-
-    for (size_t i = 0; i < m_particles.size(); ++i) {
-        for (size_t j = i + 1; j < m_particles.size(); ++j) {
-            if (glm::length(m_particles[i].position - m_particles[j].position) < 1e-4f) {
-                PBDConstraint weld;
-                weld.a = i;
-                weld.b = j;
-                weld.restLength = 0.0f;
-                m_constraints.push_back(weld);
+            AdjacentFaces& faces = edgeFaces[edge];
+            if (faces.count < 2) {
+                faces.opposite[faces.count] = oppositeVerts[edgeIdx];
+                faces.count++;
             }
+        }
+    }
+
+    m_stretchConstraints.reserve(uniqueEdges.size());
+    for (std::unordered_set<EdgeKey, EdgeKeyHash>::const_iterator it = uniqueEdges.begin(); it != uniqueEdges.end(); ++it) {
+        const EdgeKey& edge = *it;
+        const float restLength = glm::length(m_particles[edge.b].position - m_particles[edge.a].position);
+        m_stretchConstraints.push_back(StretchConstraint(edge.a, edge.b, restLength, m_stretchStiffness));
+        m_neighbors[edge.a].push_back(edge.b);
+        m_neighbors[edge.b].push_back(edge.a);
+    }
+
+    for (std::unordered_map<EdgeKey, AdjacentFaces, EdgeKeyHash>::const_iterator it = edgeFaces.begin(); it != edgeFaces.end(); ++it) {
+        const AdjacentFaces& faces = it->second;
+        if (faces.count != 2 || faces.opposite[0] == faces.opposite[1]) continue;
+
+        const float restLength = glm::length(m_particles[faces.opposite[1]].position - m_particles[faces.opposite[0]].position);
+        if (restLength > 1e-6f) {
+            m_bendConstraints.push_back(BendConstraint(faces.opposite[0], faces.opposite[1], restLength, m_bendStiffness));
         }
     }
 }
 
-void PBDSolver::integrate(float dt, float damping)
+void PBDSolver::applyExternalForces(const glm::vec3& externalForce)
 {
-    if (dt <= 0.0f) return;
-    float dt2 = dt * dt;
-    for (auto& p : m_particles) {
-        if (p.invMass == 0.0f) {
-            p.acceleration = glm::vec3(0.0f);
+    if (!m_mesh) return;
+
+    recomputeNormals();
+    for (size_t i = 0; i < m_particles.size(); ++i) {
+        PBDParticle& particle = m_particles[i];
+        particle.force = glm::vec3(0.0f);
+        if (particle.inverseMass <= 0.0f) continue;
+
+        particle.force += externalForce;
+        if (m_pressure != 0.0f) {
+            particle.force += m_mesh->vertices[i].Normal * m_pressure;
+        }
+    }
+}
+
+void PBDSolver::predictPositions(float dt)
+{
+    const float dt2 = dt * dt;
+    for (size_t i = 0; i < m_particles.size(); ++i) {
+        PBDParticle& particle = m_particles[i];
+        particle.previousPosition = particle.position;
+        if (particle.inverseMass <= 0.0f) {
+            particle.velocity = glm::vec3(0.0f);
             continue;
         }
-        glm::vec3 velocity = (p.position - p.prevPosition) * (1.0f - damping);
-        glm::vec3 newPos = p.position + velocity + p.acceleration * dt2;
-        p.prevPosition = p.position;
-        p.position = newPos;
-        p.acceleration = glm::vec3(0.0f);
+
+        particle.position += particle.velocity * dt + particle.force * particle.inverseMass * dt2;
     }
 }
 
-void PBDSolver::solveConstraints(int iterations)
+void PBDSolver::projectConstraints(int iterations)
 {
-    if (iterations <= 0) iterations = 1;
-    for (int it = 0; it < iterations; ++it) {
-        for (auto& c : m_constraints) {
-            PBDParticle& A = m_particles[c.a];
-            PBDParticle& B = m_particles[c.b];
-            glm::vec3 delta = B.position - A.position;
-            float len = glm::length(delta);
-            if (len <= 1e-6f) continue;
-            float diff = (len - c.restLength) / len;
-
-            float w1 = A.invMass;
-            float w2 = B.invMass;
-            float wsum = w1 + w2;
-            if (wsum == 0.0f) continue;
-
-            glm::vec3 correction = delta * diff;
-            if (A.invMass > 0.0f) A.position += correction * (w1 / wsum);
-            if (B.invMass > 0.0f) B.position -= correction * (w2 / wsum);
+    const int count = std::max(1, iterations);
+    for (int iteration = 0; iteration < count; ++iteration) {
+        for (size_t i = 0; i < m_stretchConstraints.size(); ++i) {
+            m_stretchConstraints[i].project(m_particles);
         }
-    }
-}
 
-void PBDSolver::recomputeNormals()
-{
-    for (auto& v : m_mesh->vertices) {
-        v.Normal = glm::vec3(0.0f);
-    }
-
-    for (size_t i = 0; i + 2 < m_mesh->indices.size(); i += 3) {
-        unsigned int i0 = m_mesh->indices[i];
-        unsigned int i1 = m_mesh->indices[i + 1];
-        unsigned int i2 = m_mesh->indices[i + 2];
-        glm::vec3 p0 = m_mesh->vertices[i0].Position;
-        glm::vec3 p1 = m_mesh->vertices[i1].Position;
-        glm::vec3 p2 = m_mesh->vertices[i2].Position;
-        glm::vec3 normal = glm::cross(p1 - p0, p2 - p0);
-        if (glm::length(normal) > 1e-6f) {
-            normal = glm::normalize(normal);
-            m_mesh->vertices[i0].Normal += normal;
-            m_mesh->vertices[i1].Normal += normal;
-            m_mesh->vertices[i2].Normal += normal;
+        for (size_t i = 0; i < m_bendConstraints.size(); ++i) {
+            m_bendConstraints[i].project(m_particles);
         }
-    }
 
-    for (auto& v : m_mesh->vertices) {
-        if (glm::length(v.Normal) > 1e-6f) v.Normal = glm::normalize(v.Normal);
-        else v.Normal = glm::vec3(0.0f, 1.0f, 0.0f);
+        projectRadiusConstraint();
     }
 }
 
-
-void PBDSolver::step(float dt, int solverIterations, const glm::vec3& gravity, float damping)
+void PBDSolver::projectRadiusConstraint()
 {
-    recomputeNormals();
+    if (m_particles.empty() || m_restAverageRadius <= 1e-6f) return;
 
-    float internalPressure = 2.0f;     // 비눗방울 팽창력 (내부 기압)
-    float surfaceTension = 10.0f;      // 표면 장력 (곡률 복원력)
-
+    glm::vec3 center(0.0f);
+    float massSum = 0.0f;
     for (size_t i = 0; i < m_particles.size(); ++i) {
-        if (m_particles[i].invMass > 0.0f) {
-            m_particles[i].acceleration += gravity;
-
-            // 1. 내부 압력 팽창 (법선 방향)
-            m_particles[i].acceleration += m_mesh->vertices[i].Normal * internalPressure;
-
-            // 2. 표면 장력 (평균 곡률 H 기반 복원력)
-            glm::vec3 curvatureForce(0.0f);
-            float weightSum = 0.0f;
-            for (auto& cw : m_cotWeights[i]) {
-                curvatureForce += cw.w * (m_particles[cw.j].position - m_particles[i].position);
-                weightSum += cw.w;
-            }
-            if (weightSum > 1e-6f) {
-                curvatureForce /= weightSum;
-            }
-            // 곡률 벡터(curvatureForce)는 표면적을 줄이려는 방향(중심)을 향함
-            m_particles[i].acceleration += surfaceTension * curvatureForce;
-        }
+        const PBDParticle& particle = m_particles[i];
+        if (particle.inverseMass <= 0.0f) continue;
+        center += particle.position;
+        massSum += 1.0f;
     }
+    if (massSum <= 0.0f) return;
+    center /= massSum;
 
-    // 1. Move particles based on velocity and acceleration
-    integrate(dt, damping);
+    float averageRadius = 0.0f;
+    int movableCount = 0;
+    for (size_t i = 0; i < m_particles.size(); ++i) {
+        const PBDParticle& particle = m_particles[i];
+        if (particle.inverseMass <= 0.0f) continue;
+        averageRadius += glm::length(particle.position - center);
+        movableCount++;
+    }
+    if (movableCount == 0) return;
+    averageRadius /= static_cast<float>(movableCount);
+    if (averageRadius <= 1e-6f) return;
 
-    // 2. Enforce structural integrity (distance constraints)
-    solveConstraints(solverIterations);
+    const float scale = 1.0f + (m_restAverageRadius / averageRadius - 1.0f) * m_radiusStiffness;
+    for (size_t i = 0; i < m_particles.size(); ++i) {
+        PBDParticle& particle = m_particles[i];
+        if (particle.inverseMass <= 0.0f) continue;
+        particle.position = center + (particle.position - center) * scale;
+    }
+}
 
-    // 3. (Optional) Update thickness for the interference colors
-    integrateThickness(dt);
+void PBDSolver::updateVelocities(float dt, float damping)
+{
+    if (dt <= 0.0f) return;
 
+    const float damp = 1.0f - clamp01(damping);
+    for (size_t i = 0; i < m_particles.size(); ++i) {
+        PBDParticle& particle = m_particles[i];
+        if (particle.inverseMass <= 0.0f) {
+            particle.velocity = glm::vec3(0.0f);
+            particle.previousPosition = particle.position;
+            continue;
+        }
 
+        particle.velocity = (particle.position - particle.previousPosition) / dt;
+        particle.velocity *= damp;
+    }
+}
 
+void PBDSolver::step(float dt, int solverIterations, const glm::vec3& externalForce, float damping)
+{
+    if (!m_mesh || dt <= 0.0f) return;
+
+    m_damping = damping;
+    applyExternalForces(externalForce);
+    predictPositions(dt);
+    projectConstraints(solverIterations);
+    updateVelocities(dt, m_damping);
+
+    for (size_t i = 0; i < m_particles.size() && i < m_mesh->vertices.size(); ++i) {
+        m_mesh->vertices[i].Position = m_particles[i].position;
+    }
+    m_thinFilm.step(dt);
 }
 
 void PBDSolver::applyToMesh()
 {
     if (!m_mesh) return;
-    size_t n = std::min(m_particles.size(), m_mesh->vertices.size());
 
-    float baseT = 0.05f;
-
-    for (size_t i = 0; i < n; ++i) {
+    const size_t count = std::min(m_particles.size(), m_mesh->vertices.size());
+    for (size_t i = 0; i < count; ++i) {
         m_mesh->vertices[i].Position = m_particles[i].position;
 
-        // 두께 변화량(0.048 ~ 0.052)을 시각적으로 유의미한 나노미터 단위(300nm ~ 700nm)로 매핑
-        float mappedNm = 500.0f + (m_particles[i].thickness - baseT) * 100000.0f;
-
-        // 위상차 연산 (주기: ~100nm)
-        float phase = fmod(mappedNm / 100.0f, 1.0f) * 2.0f * glm::pi<float>();
-
-        // 120도(2.094 rad), 240도(4.189 rad) 위상차를 둔 RGB 스펙트럼 근사
-        glm::vec3 color = glm::vec3(
-            0.5f + 0.5f * sin(phase),
-            0.5f + 0.5f * sin(phase + 2.094f),
-            0.5f + 0.5f * sin(phase + 4.189f)
-        );
-
-        m_mesh->vertices[i].Color = color;
     }
 
+    m_thinFilm.applyToMesh();
     recomputeNormals();
     m_mesh->updateVertexBuffer();
 }
 
 void PBDSolver::addImpulse(unsigned int particleIdx, const glm::vec3& velocity)
 {
-    if (particleIdx >= m_particles.size() || m_particles[particleIdx].invMass == 0.0f)
-        return;
+    if (particleIdx >= m_particles.size()) return;
 
-    // 위치 충격
-    m_particles[particleIdx].acceleration += velocity * 50.0f;
-    m_particles[particleIdx].thicknessVelocity += 0.05f;
+    PBDParticle& particle = m_particles[particleIdx];
+    if (particle.inverseMass <= 0.0f) return;
+
+    particle.velocity += velocity;
+    m_thinFilm.injectDisturbance(particleIdx, 0.018f, 0.22f);
 }
 
-void PBDSolver::integrateThickness(float dt)
+void PBDSolver::injectThicknessDisturbance(unsigned int particleIdx, float deltaThickness, float radius)
 {
-    // 1. 파동 전파 속도 대폭 증가 (이웃에게 힘을 전달할 수 있도록 20000.0f로 설정)
-    float c2 = 200.0f;
-    float k_damp = 0.05f;  // 파동이 너무 영원히 지속되지 않도록 약간의 감쇠
-
-    // 2. In-place 업데이트 방지: 모든 파티클의 Laplacian(가속도)을 먼저 계산해서 임시 저장
-    std::vector<float> laplacians(m_particles.size(), 0.0f);
-
-    for (size_t i = 0; i < m_particles.size(); ++i) {
-        float laplacian = 0.0f;
-        float weightSum = 0.0f;
-
-        // 코탄젠트 가중치를 이용한 이산 라플라스-벨트라미 연산
-        for (auto& cw : m_cotWeights[i]) {
-            // 현재 프레임의 오리지널 thickness 끼리만 비교하도록 보장
-            laplacian += cw.w * (m_particles[cw.j].thickness - m_particles[i].thickness);
-            weightSum += cw.w;
-        }
-
-        if (weightSum > 1e-6f) {
-            laplacian /= weightSum;
-        }
-        laplacians[i] = laplacian;
-    }
-
-    // 3. 계산된 Laplacian을 바탕으로 모든 파티클을 일괄 업데이트
-    for (size_t i = 0; i < m_particles.size(); ++i) {
-        auto& p = m_particles[i];
-
-        float thicknessAccel = c2 * laplacians[i];
-        p.thicknessVelocity += thicknessAccel * dt;
-        p.thicknessVelocity *= (1.0f - k_damp);
-
-        p.prevThickness = p.thickness;
-        p.thickness += p.thicknessVelocity * dt;
-
-        // 두께가 너무 얇아져서 위상차가 깨지는 현상 방지
-        if (p.thickness < 0.001f) p.thickness = 0.001f;
-    }
-
-    for (int iter = 0; iter < 2; ++iter) {
-        for (auto& c : m_constraints) {
-            // 거리가 0인 제약 = 완전히 동일한 위치에 겹쳐있는 분리된 정점(Weld)
-            if (c.restLength == 0.0f) {
-                auto& A = m_particles[c.a];
-                auto& B = m_particles[c.b];
-
-                // 두 정점의 두께와 파동 속도를 평균내서 똑같이 맞춰줌
-                float avgThickness = (A.thickness + B.thickness) * 0.5f;
-                float avgVel = (A.thicknessVelocity + B.thicknessVelocity) * 0.5f;
-
-                A.thickness = avgThickness;
-                B.thickness = avgThickness;
-                A.thicknessVelocity = avgVel;
-                B.thicknessVelocity = avgVel;
-            }
-        }
-    }
-
+    m_thinFilm.injectDisturbance(particleIdx, deltaThickness, radius);
 }
 
-void PBDSolver::solveThicknessConstraints(const std::vector<float>& currentAreas)
+void PBDSolver::recomputeNormals()
 {
-    float currentTotalVolume = 0.0f;
-    float totalArea = 0.0f;
+    if (!m_mesh) return;
 
-    for (size_t i = 0; i < m_particles.size(); ++i) {
-        currentTotalVolume += m_particles[i].thickness * currentAreas[i];
-        totalArea += currentAreas[i];
+    for (size_t i = 0; i < m_mesh->vertices.size(); ++i) {
+        m_mesh->vertices[i].Normal = glm::vec3(0.0f);
     }
 
-    float C = currentTotalVolume - m_initialTotalVolume;
+    for (size_t i = 0; i + 2 < m_mesh->indices.size(); i += 3) {
+        const unsigned int i0 = m_mesh->indices[i];
+        const unsigned int i1 = m_mesh->indices[i + 1];
+        const unsigned int i2 = m_mesh->indices[i + 2];
 
-    if (totalArea > 1e-6f) {
-        // 면적 팽창에 따른 피드백 루프를 끊고 일괄적으로 보정
-        float deltaH = -C / totalArea;
+        const glm::vec3 p0 = m_mesh->vertices[i0].Position;
+        const glm::vec3 p1 = m_mesh->vertices[i1].Position;
+        const glm::vec3 p2 = m_mesh->vertices[i2].Position;
+        glm::vec3 normal = glm::cross(p1 - p0, p2 - p0);
+        if (glm::length(normal) <= 1e-6f) continue;
 
-        for (size_t i = 0; i < m_particles.size(); ++i) {
-            m_particles[i].thickness += deltaH;
-            if (m_particles[i].thickness < 0.001f) m_particles[i].thickness = 0.001f;
+        normal = glm::normalize(normal);
+        m_mesh->vertices[i0].Normal += normal;
+        m_mesh->vertices[i1].Normal += normal;
+        m_mesh->vertices[i2].Normal += normal;
+    }
+
+    for (size_t i = 0; i < m_mesh->vertices.size(); ++i) {
+        Vertex& vertex = m_mesh->vertices[i];
+        if (glm::length(vertex.Normal) > 1e-6f) {
+            vertex.Normal = glm::normalize(vertex.Normal);
+        } else {
+            vertex.Normal = glm::vec3(0.0f, 1.0f, 0.0f);
         }
     }
 }
