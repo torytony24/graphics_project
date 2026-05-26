@@ -5,39 +5,43 @@
 #include <unordered_set>
 
 namespace {
-struct EdgeKey {
-    unsigned int a;
-    unsigned int b;
+    struct EdgeKey {
+        unsigned int a;
+        unsigned int b;
 
-    EdgeKey(unsigned int x, unsigned int y)
-    {
-        if (x < y) {
-            a = x;
-            b = y;
-        } else {
-            a = y;
-            b = x;
+        EdgeKey(unsigned int x, unsigned int y)
+        {
+            if (x < y) {
+                a = x;
+                b = y;
+            }
+            else {
+                a = y;
+                b = x;
+            }
         }
-    }
 
-    bool operator==(const EdgeKey& other) const
+        bool operator==(const EdgeKey& other) const
+        {
+            return a == other.a && b == other.b;
+        }
+    };
+
+    struct EdgeKeyHash {
+        size_t operator()(const EdgeKey& edge) const
+        {
+            return static_cast<size_t>(edge.a) * 73856093u ^ static_cast<size_t>(edge.b) * 19349663u;
+        }
+    };
+
+    float clampFloat(float value, float minValue, float maxValue)
     {
-        return a == other.a && b == other.b;
+        return std::max(minValue, std::min(maxValue, value));
     }
-};
 
-struct EdgeKeyHash {
-    size_t operator()(const EdgeKey& edge) const
-    {
-        return static_cast<size_t>(edge.a) * 73856093u ^ static_cast<size_t>(edge.b) * 19349663u;
-    }
-};
+}
 
-float clampFloat(float value, float minValue, float maxValue)
-{
-    return std::max(minValue, std::min(maxValue, value));
-}
-}
+
 
 ThinFilmSimulator::ThinFilmSimulator()
     : m_mesh(NULL),
@@ -224,3 +228,4 @@ void ThinFilmSimulator::applyToMesh()
         m_mesh->vertices[i].Color = falseColor(m_h[i]);
     }
 }
+

@@ -48,18 +48,18 @@ bool firstMouse = true;
 float deltaTime = 0.0f;
 float lastFrame = 0.0f;
 
-bool useNormalMap = true;
-bool useSpecular = false;
-bool useShadow = true;
+bool useNormalMap = false;
+bool useSpecular = true;
+bool useShadow = false;
 bool useLighting = true;
 
-bool usePCF = true;
+bool usePCF = false;
 bool showWireframe = false;
 
 float pbdStretchStiffness = 0.85f;
 float pbdBendStiffness = 0.15f;
 float pbdDamping = 0.015f;
-int pbdSolverIterations = 12;
+int pbdSolverIterations = 2;
 unsigned int thicknessDisturbanceVertex = 1000;
 
 
@@ -111,8 +111,8 @@ int main()
     Shader wireframeShader("../shaders/wireframe.vs", "../shaders/wireframe.fs");
 
 
-    Model yourOwnModel = Model("../resources/myobj/sphere.obj");
-    yourOwnModel.mesh = createHighResolutionSphereMesh(64, 128);
+    Model yourOwnModel = Model("../resources/myobj/sphere2.obj");
+    //yourOwnModel.mesh = createHighResolutionSphereMesh(64, 128);
     yourOwnModel.VAO = yourOwnModel.mesh.VAO; 
     PBDSolver* spherePBD = nullptr;
     spherePBD = new PBDSolver(&yourOwnModel.mesh);
@@ -126,7 +126,7 @@ int main()
     Scene scene;
 
     // add your model's entity here!
-    Entity* sphereEntity = new Entity(&yourOwnModel, glm::vec3(-1, 1, -1), 0.0f, 0.0f, 0.0f, 1);
+    Entity* sphereEntity = new Entity(&yourOwnModel, glm::vec3(-1, 1, -1), 0.0f, 0.0f, 0.0f, 1.0);
     scene.addEntity(sphereEntity);
 
     // define depth texture
@@ -177,14 +177,6 @@ int main()
         if (glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS) {
             spherePBD->addImpulse(1000, glm::vec3(5.0f, 2.0f, 0.0f));
         }
-        if (glfwGetKey(window, GLFW_KEY_T) == GLFW_PRESS && !isKeyboardDone[GLFW_KEY_T]) {
-            spherePBD->injectThicknessDisturbance(thicknessDisturbanceVertex, 0.025f, 0.28f);
-            thicknessDisturbanceVertex = (thicknessDisturbanceVertex + 137u) % yourOwnModel.mesh.vertices.size();
-            isKeyboardDone[GLFW_KEY_T] = true;
-        }
-        if (glfwGetKey(window, GLFW_KEY_T) == GLFW_RELEASE) {
-            isKeyboardDone[GLFW_KEY_T] = false;
-        }
 
         float currentTime = glfwGetTime();
         float dt = currentTime - oldTime;
@@ -207,8 +199,6 @@ int main()
         while (accumulator >= FIXED_DT) {
             float subDt = FIXED_DT / SUB_STEPS;
             if (spherePBD) {
-                spherePBD->setStretchStiffness(pbdStretchStiffness);
-                spherePBD->setBendStiffness(pbdBendStiffness);
                 for (int i = 0; i < SUB_STEPS; i++) {
                     spherePBD->step(subDt, pbdSolverIterations, gravity, pbdDamping);
                 }

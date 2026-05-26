@@ -10,6 +10,7 @@ file(GLOB SOURCE
     "src/*.cpp"
 )
 
+
 set(SOURCE ${SOURCE} ../glad.c)
 set(NAME "main")
 
