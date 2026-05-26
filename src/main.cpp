@@ -53,6 +53,16 @@ bool useSpecular = false;
 bool useShadow = true;
 bool useLighting = true;
 
+bool usePCF = true;
+bool showWireframe = false;
+
+float pbdStretchStiffness = 0.85f;
+float pbdBendStiffness = 0.15f;
+float pbdDamping = 0.015f;
+int pbdSolverIterations = 12;
+unsigned int thicknessDisturbanceVertex = 1000;
+
+
 int main()
 {
     // glfw: initialize and configure
@@ -101,29 +111,13 @@ int main()
     Shader wireframeShader("../shaders/wireframe.vs", "../shaders/wireframe.fs");
 
 
-    Model yourOwnModel = Model("../resources/myobj/sphere2.obj");
+    Model yourOwnModel = Model("../resources/myobj/sphere.obj");
+    yourOwnModel.mesh = createHighResolutionSphereMesh(64, 128);
+    yourOwnModel.VAO = yourOwnModel.mesh.VAO; 
     PBDSolver* spherePBD = nullptr;
     spherePBD = new PBDSolver(&yourOwnModel.mesh);
     spherePBD->initialize();
 
-    
-    /*
-    float maxY = -1e9f;
-    for (const auto& v : yourOwnModel.mesh.vertices) {
-        if (v.Position.y > maxY) {
-            maxY = v.Position.y;
-        }
-    }
-
-    float epsilon = 0.001f;
-    auto& parts = spherePBD->particles(); 
-
-    for (size_t i = 0; i < parts.size(); ++i) {
-        if (parts[i].position.y >= maxY - epsilon) {
-            parts[i].invMass = 0.0f; 
-        }
-    }
-    */
 
 
 
@@ -132,7 +126,7 @@ int main()
     Scene scene;
 
     // add your model's entity here!
-    Entity* sphereEntity = new Entity(&yourOwnModel, glm::vec3(-1, 1, -1), 0.0f, 0.0f, 0.0f, 0.2);
+    Entity* sphereEntity = new Entity(&yourOwnModel, glm::vec3(-1, 1, -1), 0.0f, 0.0f, 0.0f, 1);
     scene.addEntity(sphereEntity);
 
     // define depth texture
@@ -285,6 +279,8 @@ int main()
 
             bool hasSpecular = (model->specular != NULL);
             lightingShader.setFloat("useSpecularMap", (useSpecular && hasSpecular) ? 1.0f : 0.0f);
+
+            lightingShader.setFloat("usePCF", usePCF ? 1.0f : 0.0f);
 
             for (Entity* entity : it->second) {
                 lightingShader.setMat4("world", entity->getModelMatrix());
