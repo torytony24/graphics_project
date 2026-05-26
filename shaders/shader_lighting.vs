@@ -51,6 +51,7 @@ void main()
     gl_Position = projection * view * world * vec4(aPos, 1.0f);
 
     VertexColor = aColor;
+    // Pass film thickness to the fragment shader for interference shading.
     FilmThickness = aThickness;
 
 }

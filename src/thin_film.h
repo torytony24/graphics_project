@@ -5,6 +5,7 @@
 #include <glm/glm.hpp>
 #include <vector>
 
+// Evolves per-vertex film thickness over time.
 class ThinFilmSimulator {
 public:
     ThinFilmSimulator();

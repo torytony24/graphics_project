@@ -6,6 +6,7 @@
 #include <glm/glm.hpp>
 #include <vector>
 
+// Particle state for the soap-film PBD solver.
 struct PBDParticle {
     glm::vec3 position;
     glm::vec3 previousPosition;
@@ -52,6 +53,7 @@ private:
     float m_stiffness;
 };
 
+// Solves stretch, bend, and thickness updates for the film mesh.
 class PBDSolver {
 public:
     explicit PBDSolver(Mesh* mesh);

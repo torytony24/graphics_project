@@ -167,7 +167,7 @@ private:
 
             vertex.Tangent = vector;
             vertex.Color = glm::vec3(1.0f);
-            vertex.Thickness = 0.05f;
+            vertex.Thickness = 0.05f; // default film thickness for imported meshes
             vertices.push_back(vertex);
 
 
