@@ -22,6 +22,7 @@
 #include "light.h"
 #include "pbd.h"
 
+Mesh createHighResolutionSphereMesh(unsigned int rings, unsigned int segments);
 void framebuffer_size_callback(GLFWwindow* window, int width, int height);
 void mouse_callback(GLFWwindow* window, double xpos, double ypos);
 void scroll_callback(GLFWwindow* window, double xoffset, double yoffset);
@@ -33,8 +34,8 @@ bool isKeyboardDone[1024] = { 0 };
 // setting
 const unsigned int SCR_WIDTH = 800;
 const unsigned int SCR_HEIGHT = 600;
-const unsigned int SHADOW_WIDTH = 2048;
-const unsigned int SHADOW_HEIGHT = 2048;
+const unsigned int SHADOW_WIDTH = 1024;
+const unsigned int SHADOW_HEIGHT = 1024;
 const float planeSize = 15.f;
 
 // camera
@@ -89,6 +90,8 @@ int main()
     // configure global opengl state
     // -----------------------------
     glEnable(GL_DEPTH_TEST);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
     // build and compile our shader program
     // ------------------------------------
@@ -147,6 +150,7 @@ int main()
         "../resources/skybox/back.jpg"
     };
     CubemapTexture skyboxTexture = CubemapTexture(faces);
+    ThinFilmLUTTexture thinFilmLUT(256, 128);
     unsigned int VAOskybox, VBOskybox;
     getPositionVAO(skybox_positions, sizeof(skybox_positions), VAOskybox, VBOskybox);
 
@@ -156,6 +160,8 @@ int main()
     lightingShader.setInt("material.specularSampler", 1);
     lightingShader.setInt("material.normalSampler", 2);
     lightingShader.setInt("depthMapSampler", 3);
+    lightingShader.setInt("skyboxTexture", 4);
+    lightingShader.setInt("thinFilmLUT", 5);
     lightingShader.setFloat("material.shininess", 64.f);    // set shininess to constant value.
 
 
@@ -175,7 +181,15 @@ int main()
     while (!glfwWindowShouldClose(window))
     {
         if (glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS) {
-            spherePBD->PBDSolver::addImpulse(1000, glm::vec3(5.0f, 2.0f, 0.0f));
+            spherePBD->addImpulse(1000, glm::vec3(5.0f, 2.0f, 0.0f));
+        }
+        if (glfwGetKey(window, GLFW_KEY_T) == GLFW_PRESS && !isKeyboardDone[GLFW_KEY_T]) {
+            spherePBD->injectThicknessDisturbance(thicknessDisturbanceVertex, 0.025f, 0.28f);
+            thicknessDisturbanceVertex = (thicknessDisturbanceVertex + 137u) % yourOwnModel.mesh.vertices.size();
+            isKeyboardDone[GLFW_KEY_T] = true;
+        }
+        if (glfwGetKey(window, GLFW_KEY_T) == GLFW_RELEASE) {
+            isKeyboardDone[GLFW_KEY_T] = false;
         }
 
         float currentTime = glfwGetTime();
@@ -194,17 +208,15 @@ int main()
 
 		//glm::vec3 gravity = glm::vec3(0.0f, -9.81f, 0.0f);
         glm::vec3 gravity = glm::vec3(0.0f, 0.0f, 0.0f);
-        float damping = 0.00f;
-
         const int SUB_STEPS = 2;
-        const int PBD_ITERATIONS = 2; // 비눗방울처럼 팽팽하려면 최소 20 이상 권장
 
         while (accumulator >= FIXED_DT) {
             float subDt = FIXED_DT / SUB_STEPS;
             if (spherePBD) {
+                spherePBD->setStretchStiffness(pbdStretchStiffness);
+                spherePBD->setBendStiffness(pbdBendStiffness);
                 for (int i = 0; i < SUB_STEPS; i++) {
-                    // 솔버 이터레이션을 2에서 20으로 증가시켜 파라미터 전달
-                    spherePBD->step(subDt, PBD_ITERATIONS, gravity, damping);
+                    spherePBD->step(subDt, pbdSolverIterations, gravity, pbdDamping);
                 }
             }
             accumulator -= FIXED_DT;
@@ -255,6 +267,7 @@ int main()
 
         lightingShader.setFloat("useLighting", useLighting ? 1.0f : 0.0f);
         lightingShader.setFloat("useShadow", useShadow ? 1.0f : 0.0f);
+        lightingShader.setFloat("filmTime", currentTime);
 
         lightingShader.setMat4("lightSpaceMatrix", lightSpaceMatrix);
         lightingShader.setInt("shadowMap", 3);
@@ -280,45 +293,6 @@ int main()
             }
         }
 
-        
-        lightingShader.use(); // 조명 쉐이더 다시 바인딩
-        lightingShader.setFloat("debugThickness", 1.0f); // 디버그 모드 ON!
-
-        auto itSpherePBD = scene.entities.find(&yourOwnModel);
-        if (itSpherePBD != scene.entities.end()) {
-            for (Entity* entity : itSpherePBD->second) {
-                lightingShader.setMat4("world", entity->getModelMatrix());
-                yourOwnModel.bind();
-                glDrawElements(GL_TRIANGLES, yourOwnModel.mesh.indices.size(), GL_UNSIGNED_INT, 0);
-            }
-        }
-
-        lightingShader.setFloat("debugThickness", 0.0f); // 끄기
-
-
-
-
-        glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
-        glDisable(GL_CULL_FACE);             
-        glLineWidth(1.0f);
-
-        wireframeShader.use();
-        wireframeShader.setMat4("projection", projection);
-        wireframeShader.setMat4("view", view);
-
-        auto itSphere = scene.entities.find(&yourOwnModel);
-        if (itSphere != scene.entities.end()) {
-            for (Entity* entity : itSphere->second) {
-                wireframeShader.setMat4("model", entity->getModelMatrix());
-                yourOwnModel.bind();
-                glDrawElements(GL_TRIANGLES, yourOwnModel.mesh.indices.size(), GL_UNSIGNED_INT, 0);
-            }
-        }
-
-        glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
-        glEnable(GL_CULL_FACE);
-
-
         // use skybox Shader
         skyboxShader.use();
         glDepthFunc(GL_LEQUAL);
@@ -335,6 +309,65 @@ int main()
         glBindVertexArray(0);
         glDepthFunc(GL_LESS);
 
+        lightingShader.use();
+        lightingShader.setFloat("filmTime", currentTime);
+        lightingShader.setFloat("debugThickness", 1.0f);
+        lightingShader.setFloat("useNormalMap", 0.0f);
+        lightingShader.setFloat("useSpecularMap", 0.0f);
+        lightingShader.setFloat("useShadow", 0.0f);
+        lightingShader.setFloat("filmThicknessScale", 9000.0f);
+        lightingShader.setFloat("filmRefractiveIndex", 1.34f);
+        lightingShader.setFloat("filmAlpha", 0.18f);
+        lightingShader.setFloat("filmR0", 0.025f);
+        lightingShader.setFloat("filmDeltaMax", 1200.0f);
+        lightingShader.setFloat("filmIridescenceStrength", 2.25f);
+        lightingShader.setFloat("filmRefractionStrength", 0.82f);
+        lightingShader.setFloat("filmFresnelStrength", 1.0f);
+        lightingShader.setFloat("filmReflectionIntensity", 0.85f);
+        lightingShader.setFloat("filmRoughness", 0.16f);
+
+        glActiveTexture(GL_TEXTURE4);
+        glBindTexture(GL_TEXTURE_CUBE_MAP, skyboxTexture.textureID);
+        glActiveTexture(GL_TEXTURE5);
+        glBindTexture(GL_TEXTURE_2D, thinFilmLUT.ID);
+
+        glDisable(GL_CULL_FACE);
+        glDepthMask(GL_FALSE);
+
+        auto itSpherePBD = scene.entities.find(&yourOwnModel);
+        if (itSpherePBD != scene.entities.end()) {
+            for (Entity* entity : itSpherePBD->second) {
+                lightingShader.setMat4("world", entity->getModelMatrix());
+                yourOwnModel.bind();
+                glDrawElements(GL_TRIANGLES, yourOwnModel.mesh.indices.size(), GL_UNSIGNED_INT, 0);
+            }
+        }
+
+        glDepthMask(GL_TRUE);
+        lightingShader.setFloat("debugThickness", 0.0f);
+        lightingShader.setFloat("useShadow", useShadow ? 1.0f : 0.0f);
+
+        if (showWireframe) {
+            glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+            glDisable(GL_CULL_FACE);
+            glLineWidth(1.0f);
+
+            wireframeShader.use();
+            wireframeShader.setMat4("projection", projection);
+            wireframeShader.setMat4("view", view);
+
+            auto itSphere = scene.entities.find(&yourOwnModel);
+            if (itSphere != scene.entities.end()) {
+                for (Entity* entity : itSphere->second) {
+                    wireframeShader.setMat4("model", entity->getModelMatrix());
+                    yourOwnModel.bind();
+                    glDrawElements(GL_TRIANGLES, yourOwnModel.mesh.indices.size(), GL_UNSIGNED_INT, 0);
+                }
+            }
+
+            glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+        }
+
         // glfw: swap buffers and poll IO events (keys pressed/released, mouse moved etc.)
         // -------------------------------------------------------------------------------
         glfwSwapBuffers(window);
@@ -348,6 +381,60 @@ int main()
     // ------------------------------------------------------------------
     glfwTerminate();
     return 0;
+}
+
+Mesh createHighResolutionSphereMesh(unsigned int rings, unsigned int segments)
+{
+    std::vector<Vertex> vertices;
+    std::vector<unsigned int> indices;
+    vertices.reserve((rings + 1) * (segments + 1));
+    indices.reserve(rings * segments * 6);
+
+    for (unsigned int y = 0; y <= rings; ++y) {
+        float v = static_cast<float>(y) / static_cast<float>(rings);
+        float theta = v * glm::pi<float>();
+        float sinTheta = std::sin(theta);
+        float cosTheta = std::cos(theta);
+
+        for (unsigned int x = 0; x <= segments; ++x) {
+            float u = static_cast<float>(x) / static_cast<float>(segments);
+            float phi = u * glm::two_pi<float>();
+
+            glm::vec3 position(
+                sinTheta * std::cos(phi),
+                cosTheta,
+                sinTheta * std::sin(phi)
+            );
+
+            Vertex vertex;
+            vertex.Position = position;
+            vertex.Normal = glm::normalize(position);
+            vertex.TexCoords = glm::vec2(u, v);
+            vertex.Tangent = glm::normalize(glm::vec3(-std::sin(phi), 0.0f, std::cos(phi)));
+            vertex.Color = glm::vec3(1.0f);
+            vertex.Thickness = 0.05f;
+            vertices.push_back(vertex);
+        }
+    }
+
+    for (unsigned int y = 0; y < rings; ++y) {
+        for (unsigned int x = 0; x < segments; ++x) {
+            unsigned int i0 = y * (segments + 1) + x;
+            unsigned int i1 = i0 + 1;
+            unsigned int i2 = (y + 1) * (segments + 1) + x;
+            unsigned int i3 = i2 + 1;
+
+            indices.push_back(i0);
+            indices.push_back(i2);
+            indices.push_back(i1);
+
+            indices.push_back(i1);
+            indices.push_back(i2);
+            indices.push_back(i3);
+        }
+    }
+
+    return Mesh(vertices, indices);
 }
 
 // process all input: query GLFW whether relevant keys are pressed/released this frame and react accordingly
@@ -366,6 +453,40 @@ void processInput(GLFWwindow* window, DirectionalLight* sun)
     if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS)
         camera.ProcessKeyboard(RIGHT, deltaTime);
 
+    if (glfwGetKey(window, GLFW_KEY_F) == GLFW_PRESS && !isKeyboardDone[GLFW_KEY_F]) {
+        showWireframe = !showWireframe;
+        isKeyboardDone[GLFW_KEY_F] = true;
+    }
+    if (glfwGetKey(window, GLFW_KEY_F) == GLFW_RELEASE) {
+        isKeyboardDone[GLFW_KEY_F] = false;
+    }
+
+    if (glfwGetKey(window, GLFW_KEY_LEFT_BRACKET) == GLFW_PRESS) {
+        pbdStretchStiffness = MAX(0.0f, pbdStretchStiffness - deltaTime);
+    }
+    if (glfwGetKey(window, GLFW_KEY_RIGHT_BRACKET) == GLFW_PRESS) {
+        pbdStretchStiffness = MIN(1.0f, pbdStretchStiffness + deltaTime);
+    }
+    if (glfwGetKey(window, GLFW_KEY_SEMICOLON) == GLFW_PRESS) {
+        pbdDamping = MAX(0.0f, pbdDamping - 0.25f * deltaTime);
+    }
+    if (glfwGetKey(window, GLFW_KEY_APOSTROPHE) == GLFW_PRESS) {
+        pbdDamping = MIN(0.2f, pbdDamping + 0.25f * deltaTime);
+    }
+    if (glfwGetKey(window, GLFW_KEY_COMMA) == GLFW_PRESS && !isKeyboardDone[GLFW_KEY_COMMA]) {
+        pbdSolverIterations = MAX(1, pbdSolverIterations - 1);
+        isKeyboardDone[GLFW_KEY_COMMA] = true;
+    }
+    if (glfwGetKey(window, GLFW_KEY_COMMA) == GLFW_RELEASE) {
+        isKeyboardDone[GLFW_KEY_COMMA] = false;
+    }
+    if (glfwGetKey(window, GLFW_KEY_PERIOD) == GLFW_PRESS && !isKeyboardDone[GLFW_KEY_PERIOD]) {
+        pbdSolverIterations = MIN(64, pbdSolverIterations + 1);
+        isKeyboardDone[GLFW_KEY_PERIOD] = true;
+    }
+    if (glfwGetKey(window, GLFW_KEY_PERIOD) == GLFW_RELEASE) {
+        isKeyboardDone[GLFW_KEY_PERIOD] = false;
+    }
 
     float t = 20.0f * deltaTime;
     

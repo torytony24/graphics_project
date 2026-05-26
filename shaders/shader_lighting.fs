@@ -23,8 +23,11 @@ in vec3 Normal;
 in mat3 TBN;
 in vec4 FragPosLightSpace;
 in vec3 VertexColor;
+in float FilmThickness;
 
 uniform sampler2D shadowMap;
+uniform samplerCube skyboxTexture;
+uniform sampler2D thinFilmLUT;
 
 uniform float useNormalMap;
 uniform float useSpecularMap;
@@ -32,6 +35,17 @@ uniform float useShadow;
 uniform float useLighting;
 
 uniform float debugThickness;
+uniform float filmTime;
+uniform float filmThicknessScale;
+uniform float filmRefractiveIndex;
+uniform float filmAlpha;
+uniform float filmR0;
+uniform float filmDeltaMax;
+uniform float filmIridescenceStrength;
+uniform float filmRefractionStrength;
+uniform float filmFresnelStrength;
+uniform float filmReflectionIntensity;
+uniform float filmRoughness;
 
 
 
@@ -73,23 +87,49 @@ void main()
         specular = light.color * spec * k_s;
     }
     
+    vec3 viewDir = normalize(viewPos - FragPos);
+    float cosTheta = clamp(dot(normal, viewDir), 0.0, 1.0);
+    float fresnel = schlickFresnel(cosTheta, filmR0);
     vec3 result;
     
     if (debugThickness > 0.5f) {
-        // 1. 비눗방울 렌더링 (PBD 간섭색 적용)
-        float lightInfluence = 0.5;
-        
-        // 텍스처(color) 대신 VertexColor에 조명 밝기(diff * light.color)만 곱합니다.
-        vec3 bubbleDiffuse = VertexColor * diff * light.color; 
-        
-        // 본래 색상(VertexColor)과 조명 받은 색상을 섞고 하이라이트를 더합니다.
-        result = mix(VertexColor, bubbleDiffuse, lightInfluence) + specular;
+        float opticalThickness = continuousFilmThickness(FilmThickness, normal, FragPos);
+        float hNm = opticalThickness * filmThicknessScale;
+        float deltaNm = opticalPathDifference(hNm, cosTheta, filmRefractiveIndex);
+        vec3 interferenceRGB = sampleThinFilmLUT(deltaNm, cosTheta);
+        vec3 reflectedDir = reflect(-viewDir, normal);
+        vec3 envReflection = texture(skyboxTexture, reflectedDir).rgb;
+        vec3 refractedDir = refract(-viewDir, normal, 1.0 / filmRefractiveIndex);
+        if (length(refractedDir) < 1e-4) {
+            refractedDir = reflectedDir;
+        }
+        vec3 envRefraction = texture(skyboxTexture, refractedDir).rgb;
+
+        vec3 halfDir = normalize(lightDir + viewDir);
+        float NoL = clamp(dot(normal, lightDir), 0.0, 1.0);
+        float NoV = max(cosTheta, 1e-4);
+        float NoH = clamp(dot(normal, halfDir), 0.0, 1.0);
+        float LoH = clamp(dot(lightDir, halfDir), 0.0, 1.0);
+
+        float directionalFresnel = schlickFresnel(LoH, filmR0) * filmFresnelStrength;
+        float D = distributionGGX(NoH, filmRoughness);
+        float V = visibilitySmithGGXCorrelated(NoV, NoL, filmRoughness);
+        float cookTorranceSpecular = D * V * NoL;
+
+        float viewFresnel = fresnel * filmFresnelStrength;
+        float localIridescence = clamp(cookTorranceSpecular * directionalFresnel * filmIridescenceStrength, 0.0, 3.0);
+        float envIridescence = viewFresnel * filmReflectionIntensity;
+
+        vec3 transparentFilm = envRefraction * filmRefractionStrength * (1.0 - clamp(viewFresnel, 0.0, 0.85));
+        vec3 neutralReflection = envReflection * viewFresnel * 0.18;
+        vec3 iridescentEnv = envReflection * interferenceRGB * envIridescence;
+        vec3 iridescentLight = light.color * interferenceRGB * localIridescence;
+        result = transparentFilm + neutralReflection + iridescentEnv + iridescentLight;
     } else {
-        // 2. 일반 물체 렌더링 (기존 방식)
         result = ambient + diffuse + specular;
     }
 
-    // 최종 출력
-    FragColor = vec4(result, 1.0);
+    float alpha = debugThickness > 0.5f ? clamp(filmAlpha + fresnel * 0.36 * filmFresnelStrength, filmAlpha, 0.70) : 1.0;
+    FragColor = vec4(result, alpha);
 
 }
