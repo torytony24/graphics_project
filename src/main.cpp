@@ -52,8 +52,6 @@ bool useSpecular = false;
 bool useShadow = true;
 bool useLighting = true;
 
-bool usePCF = true;
-
 int main()
 {
     // glfw: initialize and configure
@@ -65,7 +63,7 @@ int main()
 
     // glfw window creation
     // --------------------
-    GLFWwindow* window = glfwCreateWindow(SCR_WIDTH, SCR_HEIGHT, "LearnOpenGL", NULL, NULL);
+    GLFWwindow* window = glfwCreateWindow(SCR_WIDTH, SCR_HEIGHT, "Soap Bubble Simulator", NULL, NULL);
     if (window == NULL)
     {
         std::cout << "Failed to create GLFW window" << std::endl;
@@ -100,13 +98,13 @@ int main()
     Shader wireframeShader("../shaders/wireframe.vs", "../shaders/wireframe.fs");
 
 
-    Model yourOwnModel = Model("../resources/myobj/sphere.obj");
+    Model yourOwnModel = Model("../resources/myobj/sphere2.obj");
     PBDSolver* spherePBD = nullptr;
     spherePBD = new PBDSolver(&yourOwnModel.mesh);
     spherePBD->initialize();
 
     
-    
+    /*
     float maxY = -1e9f;
     for (const auto& v : yourOwnModel.mesh.vertices) {
         if (v.Position.y > maxY) {
@@ -122,7 +120,7 @@ int main()
             parts[i].invMass = 0.0f; 
         }
     }
-    
+    */
 
 
 
@@ -131,7 +129,7 @@ int main()
     Scene scene;
 
     // add your model's entity here!
-    Entity* sphereEntity = new Entity(&yourOwnModel, glm::vec3(-1, 1, -1), 0.0f, 0.0f, 0.0f, 1);
+    Entity* sphereEntity = new Entity(&yourOwnModel, glm::vec3(-1, 1, -1), 0.0f, 0.0f, 0.0f, 0.2);
     scene.addEntity(sphereEntity);
 
     // define depth texture
@@ -274,8 +272,6 @@ int main()
 
             bool hasSpecular = (model->specular != NULL);
             lightingShader.setFloat("useSpecularMap", (useSpecular && hasSpecular) ? 1.0f : 0.0f);
-
-            lightingShader.setFloat("usePCF", usePCF ? 1.0f : 0.0f);
 
             for (Entity* entity : it->second) {
                 lightingShader.setMat4("world", entity->getModelMatrix());

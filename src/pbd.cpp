@@ -180,6 +180,9 @@ void PBDSolver::integrate(float dt, float damping)
 void PBDSolver::solveConstraints(int iterations)
 {
     if (iterations <= 0) iterations = 1;
+
+    float stiffness = 0.2f;
+
     for (int it = 0; it < iterations; ++it) {
         for (auto& c : m_constraints) {
             PBDParticle& A = m_particles[c.a];
@@ -194,7 +197,7 @@ void PBDSolver::solveConstraints(int iterations)
             float wsum = w1 + w2;
             if (wsum == 0.0f) continue;
 
-            glm::vec3 correction = delta * diff;
+            glm::vec3 correction = delta * diff * stiffness;
             if (A.invMass > 0.0f) A.position += correction * (w1 / wsum);
             if (B.invMass > 0.0f) B.position -= correction * (w2 / wsum);
         }
@@ -308,7 +311,7 @@ void PBDSolver::addImpulse(unsigned int particleIdx, const glm::vec3& velocity)
         return;
 
     // 위치 충격
-    m_particles[particleIdx].acceleration += velocity * 50.0f;
+    m_particles[particleIdx].acceleration += velocity * 500.0f;
     m_particles[particleIdx].thicknessVelocity += 0.05f;
 }
 
@@ -316,7 +319,7 @@ void PBDSolver::integrateThickness(float dt)
 {
     // 1. 파동 전파 속도 대폭 증가 (이웃에게 힘을 전달할 수 있도록 20000.0f로 설정)
     float c2 = 200.0f;
-    float k_damp = 0.05f;  // 파동이 너무 영원히 지속되지 않도록 약간의 감쇠
+    float k_damp = 0.0f;  // 파동이 너무 영원히 지속되지 않도록 약간의 감쇠
 
     // 2. In-place 업데이트 방지: 모든 파티클의 Laplacian(가속도)을 먼저 계산해서 임시 저장
     std::vector<float> laplacians(m_particles.size(), 0.0f);
