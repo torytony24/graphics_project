@@ -111,6 +111,7 @@ int main()
 
 
     Model yourOwnModel = Model("../resources/myobj/sphere.obj");
+    // Use a denser sphere here so the soap-film deformation stays smooth.
     yourOwnModel.mesh = createHighResolutionSphereMesh(64, 128);
     yourOwnModel.VAO = yourOwnModel.mesh.VAO;
     PBDSolver* spherePBD = nullptr;
@@ -331,6 +332,7 @@ int main()
         glBindTexture(GL_TEXTURE_2D, thinFilmLUT.ID);
 
         glDisable(GL_CULL_FACE);
+        // Draw the translucent film without writing depth, so the bubble stays visually layered.
         glDepthMask(GL_FALSE);
 
         auto itSpherePBD = scene.entities.find(&yourOwnModel);

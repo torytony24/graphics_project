@@ -60,6 +60,7 @@ public:
     ThinFilmLUTTexture(int lutWidth = 256, int lutHeight = 128)
         : ID(0), width(lutWidth), height(lutHeight)
     {
+        // Precompute the LUT on the CPU so the shader can sample interference colors cheaply.
         std::vector<unsigned char> pixels(width * height * 3);
 
         for (int y = 0; y < height; ++y) {

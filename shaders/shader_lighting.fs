@@ -189,6 +189,7 @@ void main()
     float fresnel = schlickFresnel(cosTheta, filmR0);
     vec3 result;
     
+    // Thin-film debug pass: keep the lighting path intact while previewing interference colors.
     if (debugThickness > 0.5f) {
         float opticalThickness = continuousFilmThickness(FilmThickness, normal, FragPos);
         float hNm = opticalThickness * filmThicknessScale;

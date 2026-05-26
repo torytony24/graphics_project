@@ -215,6 +215,7 @@ void PBDSolver::buildConstraintsFromTriangles()
         }
     }
 
+    // Build stretch and bend constraints once from the mesh connectivity.
     m_stretchConstraints.reserve(uniqueEdges.size());
     for (std::unordered_set<EdgeKey, EdgeKeyHash>::const_iterator it = uniqueEdges.begin(); it != uniqueEdges.end(); ++it) {
         const EdgeKey& edge = *it;
