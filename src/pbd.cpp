@@ -254,13 +254,27 @@ void PBDSolver::applyExternalForces(const glm::vec3& externalForce)
 
 void PBDSolver::predictPositions(float dt)
 {
-    const float dt2 = dt * dt;
-    for (size_t i = 0; i < m_particles.size(); ++i) {
-        PBDParticle& particle = m_particles[i];
-        particle.previousPosition = particle.position;
-        if (particle.inverseMass <= 0.0f) {
-            particle.velocity = glm::vec3(0.0f);
-            continue;
+    if (iterations <= 0) iterations = 1;
+
+    float stiffness = 0.2f;
+
+    for (int it = 0; it < iterations; ++it) {
+        for (auto& c : m_constraints) {
+            PBDParticle& A = m_particles[c.a];
+            PBDParticle& B = m_particles[c.b];
+            glm::vec3 delta = B.position - A.position;
+            float len = glm::length(delta);
+            if (len <= 1e-6f) continue;
+            float diff = (len - c.restLength) / len;
+
+            float w1 = A.invMass;
+            float w2 = B.invMass;
+            float wsum = w1 + w2;
+            if (wsum == 0.0f) continue;
+
+            glm::vec3 correction = delta * diff * stiffness;
+            if (A.invMass > 0.0f) A.position += correction * (w1 / wsum);
+            if (B.invMass > 0.0f) B.position -= correction * (w2 / wsum);
         }
 
         particle.position += particle.velocity * dt + particle.force * particle.inverseMass * dt2;
@@ -374,14 +388,19 @@ void PBDSolver::addImpulse(unsigned int particleIdx, const glm::vec3& velocity)
     PBDParticle& particle = m_particles[particleIdx];
     if (particle.inverseMass <= 0.0f) return;
 
-    particle.velocity += velocity;
-    m_thinFilm.injectDisturbance(particleIdx, 0.018f, 0.22f);
+    // 위치 충격
+    m_particles[particleIdx].acceleration += velocity * 500.0f;
+    m_particles[particleIdx].thicknessVelocity += 0.05f;
 }
 
 void PBDSolver::injectThicknessDisturbance(unsigned int particleIdx, float deltaThickness, float radius)
 {
-    m_thinFilm.injectDisturbance(particleIdx, deltaThickness, radius);
-}
+    // 1. 파동 전파 속도 대폭 증가 (이웃에게 힘을 전달할 수 있도록 20000.0f로 설정)
+    float c2 = 200.0f;
+    float k_damp = 0.0f;  // 파동이 너무 영원히 지속되지 않도록 약간의 감쇠
+
+    // 2. In-place 업데이트 방지: 모든 파티클의 Laplacian(가속도)을 먼저 계산해서 임시 저장
+    std::vector<float> laplacians(m_particles.size(), 0.0f);
 
 void PBDSolver::recomputeNormals()
 {
