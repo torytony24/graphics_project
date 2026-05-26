@@ -56,10 +56,14 @@ bool useLighting = true;
 bool usePCF = true;
 bool showWireframe = false;
 
-float pbdStretchStiffness = 0.85f;
-float pbdBendStiffness = 0.15f;
-float pbdDamping = 0.015f;
-int pbdSolverIterations = 12;
+//float pbdStretchStiffness = 0.85f;
+//float pbdBendStiffness = 0.15f;
+//float pbdDamping = 0.015f;
+//int pbdSolverIterations = 12;
+float pbdStretchStiffness = 0.70f;
+float pbdBendStiffness = 0.08f;
+float pbdDamping = 0.005f;
+int pbdSolverIterations = 4;
 unsigned int thicknessDisturbanceVertex = 1000;
 
 int main()
@@ -178,11 +182,19 @@ int main()
 
     while (!glfwWindowShouldClose(window))
     {
-        if (glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS) {
-            spherePBD->addImpulse(1000, glm::vec3(5.0f, 2.0f, 0.0f));
+        // SPACE: trigger one-shot wave on key edge
+        if (glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS && !isKeyboardDone[GLFW_KEY_SPACE]) {
+            isKeyboardDone[GLFW_KEY_SPACE] = true;
+            if (spherePBD) {
+                // a single press starts a slow zero-gravity droplet wobble
+                spherePBD->startWave(thicknessDisturbanceVertex, 0.16f, 1.2f, 7.0f);
+            }
+        }
+        if (glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_RELEASE) {
+            isKeyboardDone[GLFW_KEY_SPACE] = false;
         }
         if (glfwGetKey(window, GLFW_KEY_T) == GLFW_PRESS && !isKeyboardDone[GLFW_KEY_T]) {
-            spherePBD->injectThicknessDisturbance(thicknessDisturbanceVertex, 0.025f, 0.28f);
+            spherePBD->injectThicknessDisturbance(thicknessDisturbanceVertex, 0.12f, 0.95f);
             thicknessDisturbanceVertex = (thicknessDisturbanceVertex + 137u) % yourOwnModel.mesh.vertices.size();
             isKeyboardDone[GLFW_KEY_T] = true;
         }
