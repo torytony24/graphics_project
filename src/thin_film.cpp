@@ -183,6 +183,14 @@ void ThinFilmSimulator::injectDisturbance(unsigned int centerVertex, float delta
     applyToMesh();
 }
 
+void ThinFilmSimulator::addThicknessDelta(unsigned int vertexIdx, float deltaThickness)
+{
+    if (!m_mesh || vertexIdx >= m_h.size()) return;
+    // add and clamp the thickness, and add to velocity for dynamic response
+    m_h[vertexIdx] = clampFloat(m_h[vertexIdx] + deltaThickness, m_minThickness, m_maxThickness);
+    m_vh[vertexIdx] += deltaThickness * 12.0f;
+}
+
 void ThinFilmSimulator::conserveGlobalThickness()
 {
     float currentTotal = 0.0f;

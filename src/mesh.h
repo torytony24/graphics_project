@@ -25,7 +25,7 @@ struct Vertex {
     glm::vec3 Tangent;
 
     glm::vec3 Color;
-    float Thickness;
+    float Thickness; // soap-film thickness carried to the shader
 };
 
 

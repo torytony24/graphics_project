@@ -5,6 +5,7 @@
 #include <glm/glm.hpp>
 #include <vector>
 
+// Evolves per-vertex film thickness over time.
 class ThinFilmSimulator {
 public:
     ThinFilmSimulator();
@@ -12,6 +13,7 @@ public:
     void initialize(Mesh* mesh, float initialThickness);
     void step(float dt);
     void injectDisturbance(unsigned int centerVertex, float deltaThickness, float radius);
+    void addThicknessDelta(unsigned int vertexIdx, float deltaThickness);
     void applyToMesh();
 
     void setWaveSpeedSquared(float c2) { m_c2 = c2; }

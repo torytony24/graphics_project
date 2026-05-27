@@ -6,6 +6,7 @@
 #include <glm/glm.hpp>
 #include <vector>
 
+// Particle state for the soap-film PBD solver.
 struct PBDParticle {
     glm::vec3 position;
     glm::vec3 previousPosition;
@@ -52,6 +53,7 @@ private:
     float m_stiffness;
 };
 
+// Solves stretch, bend, and thickness updates for the film mesh.
 class PBDSolver {
 public:
     explicit PBDSolver(Mesh* mesh);
@@ -61,6 +63,8 @@ public:
     void applyToMesh();
     void addImpulse(unsigned int particleIdx, const glm::vec3& velocity);
     void injectThicknessDisturbance(unsigned int particleIdx, float deltaThickness, float radius);
+    void startWave(unsigned int centerVertex, float amplitude, float radius, float duration);
+    void stopWave();
 
     void setStretchStiffness(float stiffness);
     void setBendStiffness(float stiffness);
@@ -86,6 +90,16 @@ private:
     float m_radiusStiffness;
     glm::vec3 m_restCenter;
     float m_restAverageRadius;
+    // wave effect
+    bool m_waveActive;
+    unsigned int m_waveCenter;
+    float m_waveAmplitude;
+    float m_waveRadius;
+    float m_waveTimer;
+    float m_waveDuration;
+    float m_waveFrequency;
+    float m_waveSpeed;
+    
 
     void buildConstraintsFromTriangles();
     void applyExternalForces(const glm::vec3& externalForce);
@@ -94,4 +108,5 @@ private:
     void projectRadiusConstraint();
     void updateVelocities(float dt, float damping);
     void recomputeNormals();
+    std::vector<glm::vec3> m_restTriNormals;
 };

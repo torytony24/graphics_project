@@ -102,9 +102,40 @@ PBDSolver::PBDSolver(Mesh* mesh)
       m_damping(0.015f),
       m_pressure(0.0f),
       m_radiusStiffness(0.35f),
-      m_restCenter(0.0f),
+      m_restCenter(glm::vec3(0.0f)),
       m_restAverageRadius(1.0f)
 {
+    // initialize wave state
+    m_waveActive = false;
+    m_waveCenter = 0;
+    m_waveAmplitude = 0.0f;
+    m_waveRadius = 0.0f;
+    m_waveTimer = 0.0f;
+    m_waveDuration = 0.0f;
+    m_waveFrequency = 0.0f;
+    m_waveSpeed = 0.0f;
+}
+
+void PBDSolver::startWave(unsigned int centerVertex, float amplitude, float radius, float duration)
+{
+    if (!m_mesh || centerVertex >= m_particles.size()) return;
+    m_waveActive = true;
+    m_waveCenter = centerVertex;
+    // A SPACE press should feel like a zero-gravity droplet being tapped once:
+    // visible inertia, slow oscillation, then damping back to rest.
+    m_waveAmplitude = amplitude;
+    m_waveRadius = radius;
+    m_waveTimer = 0.0f;
+    m_waveDuration = duration;
+    m_waveFrequency = 0.92f;
+    m_waveSpeed = std::max(0.1f, m_waveRadius / std::max(0.1f, m_waveDuration * 0.6f));
+    // initial thin-film disturbance at start
+    m_thinFilm.injectDisturbance(m_waveCenter, m_waveAmplitude * 0.01f, m_waveRadius);
+}
+
+void PBDSolver::stopWave()
+{
+    m_waveActive = false;
 }
 
 void PBDSolver::initialize()
@@ -163,6 +194,20 @@ void PBDSolver::initialize()
         m_particles[i2].baseArea += area / 3.0f;
     }
 
+    // store rest triangle normals for inversion checks
+    m_restTriNormals.clear();
+    for (size_t i = 0; i + 2 < m_mesh->indices.size(); i += 3) {
+        const unsigned int i0 = m_mesh->indices[i];
+        const unsigned int i1 = m_mesh->indices[i + 1];
+        const unsigned int i2 = m_mesh->indices[i + 2];
+        const glm::vec3 p0 = m_mesh->vertices[i0].Position;
+        const glm::vec3 p1 = m_mesh->vertices[i1].Position;
+        const glm::vec3 p2 = m_mesh->vertices[i2].Position;
+        glm::vec3 n = glm::cross(p1 - p0, p2 - p0);
+        if (glm::length(n) > 1e-8f) n = glm::normalize(n);
+        m_restTriNormals.push_back(n);
+    }
+
     buildConstraintsFromTriangles();
     m_thinFilm.initialize(m_mesh, 0.05f);
     recomputeNormals();
@@ -215,6 +260,7 @@ void PBDSolver::buildConstraintsFromTriangles()
         }
     }
 
+    // Build stretch and bend constraints once from the mesh connectivity.
     m_stretchConstraints.reserve(uniqueEdges.size());
     for (std::unordered_set<EdgeKey, EdgeKeyHash>::const_iterator it = uniqueEdges.begin(); it != uniqueEdges.end(); ++it) {
         const EdgeKey& edge = *it;
@@ -341,6 +387,86 @@ void PBDSolver::step(float dt, int solverIterations, const glm::vec3& externalFo
     if (!m_mesh || dt <= 0.0f) return;
 
     m_damping = damping;
+    // SPACE wave: zero-gravity surface wobble.  There is no global breathing
+    // scale here; the radial mode is mean-free, so some regions move inward
+    // while others move outward and the overall bubble size stays stable.
+    if (m_waveActive) {
+        m_waveTimer += dt;
+        const float t = m_waveTimer;
+        const float duration = std::max(m_waveDuration, 1e-4f);
+        const float progress = glm::clamp(t / duration, 0.0f, 1.0f);
+        const float fade = std::exp(-2.35f * progress);
+        const float phase = glm::two_pi<float>() * m_waveFrequency * t;
+        const float secondaryPhase = phase * 0.63f + 1.1f;
+
+        const float surfaceRipple = 0.055f * fade;
+        const float tangentStrength = 0.020f * fade;
+        const glm::vec3 modeA = glm::normalize(glm::vec3(0.73f, -0.31f, 0.61f));
+        const glm::vec3 modeB = glm::normalize(glm::vec3(-0.42f, 0.84f, 0.35f));
+        const glm::vec3 modeC = glm::normalize(glm::vec3(0.18f, 0.47f, -0.86f));
+
+        std::vector<float> radialModes(m_particles.size(), 0.0f);
+        double weightedSum = 0.0;
+        double totalWeight = 0.0;
+        for (size_t i = 0; i < m_particles.size(); ++i) {
+            const PBDParticle& particle = m_particles[i];
+            const glm::vec3 restOffset = particle.restPosition - m_restCenter;
+            const float restLen = glm::length(restOffset);
+            if (restLen <= 1e-6f) continue;
+
+            const glm::vec3 restDir = restOffset / restLen;
+            const float latitude = glm::clamp(restDir.y, -1.0f, 1.0f);
+            const float azimuth = std::atan2(restDir.z, restDir.x);
+            const float randomMode =
+                0.45f * std::sin(4.0f * glm::dot(restDir, modeA) + phase * 1.13f) +
+                0.35f * std::sin(5.0f * glm::dot(restDir, modeB) - phase * 0.91f + 1.7f) +
+                0.20f * std::sin(6.0f * glm::dot(restDir, modeC) + phase * 0.57f + 2.4f) +
+                0.18f * std::sin(2.0f * azimuth - phase * 0.78f + 2.5f * latitude);
+
+            radialModes[i] = randomMode;
+            const double weight = std::max(1e-8, static_cast<double>(particle.baseArea));
+            weightedSum += static_cast<double>(randomMode) * weight;
+            totalWeight += weight;
+        }
+
+        const float meanMode = (totalWeight > 0.0) ? static_cast<float>(weightedSum / totalWeight) : 0.0f;
+
+        for (size_t i = 0; i < m_particles.size(); ++i) {
+            PBDParticle& particle = m_particles[i];
+            const glm::vec3 restOffset = particle.restPosition - m_restCenter;
+            const float restLen = glm::length(restOffset);
+            if (restLen <= 1e-6f) continue;
+
+            const glm::vec3 restDir = restOffset / restLen;
+            const float latitude = glm::clamp(restDir.y, -1.0f, 1.0f);
+            const float equatorWeight = 1.0f - latitude * latitude;
+            const float azimuth = std::atan2(restDir.z, restDir.x);
+            const float localMode = radialModes[i] - meanMode;
+            const float radialOffset = glm::clamp(surfaceRipple * localMode, -0.060f, 0.060f);
+            const glm::vec3 target = restOffset + restDir * radialOffset;
+
+            glm::vec3 tangentA = modeA - restDir * glm::dot(modeA, restDir);
+            if (glm::length(tangentA) > 1e-6f) {
+                tangentA = glm::normalize(tangentA);
+            } else {
+                tangentA = glm::vec3(-restDir.z, 0.0f, restDir.x);
+                if (glm::length(tangentA) > 1e-6f) tangentA = glm::normalize(tangentA);
+            }
+            glm::vec3 tangentB = modeB - restDir * glm::dot(modeB, restDir);
+            if (glm::length(tangentB) > 1e-6f) tangentB = glm::normalize(tangentB);
+            const float tangentWaveA = std::sin(3.0f * glm::dot(restDir, modeC) - phase * 0.83f + azimuth);
+            const float tangentWaveB = std::sin(4.0f * glm::dot(restDir, modeA) + phase * 0.67f - latitude);
+            const glm::vec3 tangentOffset = tangentStrength * equatorWeight * (tangentA * tangentWaveA + tangentB * tangentWaveB);
+
+            const glm::vec3 targetPosition = m_restCenter + target + tangentOffset;
+            particle.position = glm::mix(particle.position, targetPosition, 0.24f);
+            m_thinFilm.addThicknessDelta(static_cast<unsigned int>(i), radialOffset * 0.012f);
+        }
+
+        if (m_waveTimer >= m_waveDuration) {
+            m_waveActive = false;
+        }
+    }
     applyExternalForces(externalForce);
     predictPositions(dt);
     projectConstraints(solverIterations);
@@ -375,6 +501,8 @@ void PBDSolver::addImpulse(unsigned int particleIdx, const glm::vec3& velocity)
     if (particle.inverseMass <= 0.0f) return;
 
     particle.velocity += velocity;
+    particle.position += velocity * 0.02f;
+    particle.previousPosition = particle.position - particle.velocity * 0.02f;
     m_thinFilm.injectDisturbance(particleIdx, 0.018f, 0.22f);
 }
 
