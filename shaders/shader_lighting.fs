@@ -93,18 +93,17 @@ float opticalPathDifference(float h, float cosTheta, float n)
     return 2.0 * n * h * refracted;
 }
 
-vec3 sampleThinFilmLUT(float hNm, float cosTheta)
+vec4 sampleThinFilmLUT(float deltaNm, float cosTheta)
 {
-    // U 좌표에 deltaNm 대신 두께(hNm)를 직접 사용합니다.
-    vec2 uv = vec2(clamp(hNm / filmDeltaMax, 0.0, 1.0), clamp(cosTheta, 0.0, 1.0));
-    vec3 lutColor = texture(thinFilmLUT, uv).rgb;
-    return lutColor;
+    vec2 uv = vec2(clamp(deltaNm / filmDeltaMax, 0.0, 1.0), clamp(cosTheta, 0.0, 1.0));
+    return texture(thinFilmLUT, uv);
 }
 
 float continuousFilmThickness(float h, vec3 normal, vec3 worldPos)
 {
     return max(0.001, h);
 }
+
 
 float ShadowCalculation(vec4 fragPosLightSpace, vec3 normal, vec3 lightDir)
 {
@@ -139,7 +138,6 @@ float ShadowCalculation(vec4 fragPosLightSpace, vec3 normal, vec3 lightDir)
     shadow /= 16.0;
     return shadow;
 }
-
 
 
 void main()
@@ -189,39 +187,22 @@ void main()
     float cosTheta = clamp(dot(normal, viewDir), 0.0, 1.0);
     float fresnel = schlickFresnel(cosTheta, filmR0);
     vec3 result;
+    float thinFilmTransmission = 1.0;
     
     if (debugThickness > 0.5f) {
         float opticalThickness = continuousFilmThickness(FilmThickness, normal, FragPos);
         float hNm = opticalThickness * filmThicknessScale;
         float deltaNm = opticalPathDifference(hNm, cosTheta, filmRefractiveIndex);
-        vec3 interferenceRGB = sampleThinFilmLUT(hNm, cosTheta);
-
-        // -----------------------------------------------------
-        // 여기서부터 교체하세요 (기존의 reflectedDir, refractedDir 선언부 덮어쓰기)
-        // -----------------------------------------------------
-        vec3 offset = vec3(0.015, 0.0, 0.0); // 색수차 강도
-
+        vec4 thinFilmSample = sampleThinFilmLUT(deltaNm, cosTheta);
+        vec3 interferenceRGB = thinFilmSample.rgb;
+        thinFilmTransmission = thinFilmSample.a;
         vec3 reflectedDir = reflect(-viewDir, normal);
-        vec3 envReflection;
-        envReflection.r = texture(skyboxTexture, normalize(reflectedDir + offset * 0.5)).r;
-        envReflection.g = texture(skyboxTexture, reflectedDir).g;
-        envReflection.b = texture(skyboxTexture, normalize(reflectedDir - offset * 0.5)).b;
-
+        vec3 envReflection = texture(skyboxTexture, reflectedDir).rgb;
         vec3 refractedDir = refract(-viewDir, normal, 1.0 / filmRefractiveIndex);
         if (length(refractedDir) < 1e-4) {
             refractedDir = reflectedDir;
         }
-        
-        vec3 envRefraction;
-        envRefraction.r = texture(skyboxTexture, normalize(refractedDir + offset)).r;
-        envRefraction.g = texture(skyboxTexture, refractedDir).g;
-        envRefraction.b = texture(skyboxTexture, normalize(refractedDir - offset)).b;
-        // -----------------------------------------------------
-        // 여기까지 교체 완료. 이 아래는 기존 vec3 halfDir = ... 로 이어지면 됩니다.
-        // -----------------------------------------------------
-
-
-
+        vec3 envRefraction = texture(skyboxTexture, refractedDir).rgb;
 
         vec3 halfDir = normalize(lightDir + viewDir);
         float NoL = clamp(dot(normal, lightDir), 0.0, 1.0);
@@ -238,7 +219,7 @@ void main()
         float localIridescence = clamp(cookTorranceSpecular * directionalFresnel * filmIridescenceStrength, 0.0, 3.0);
         float envIridescence = viewFresnel * filmReflectionIntensity;
 
-        vec3 transparentFilm = envRefraction * filmRefractionStrength * (1.0 - clamp(viewFresnel, 0.0, 0.85));
+        vec3 transparentFilm = envRefraction * filmRefractionStrength * thinFilmTransmission * (1.0 - clamp(viewFresnel, 0.0, 0.85));
         vec3 neutralReflection = envReflection * viewFresnel * 0.18;
         vec3 iridescentEnv = envReflection * interferenceRGB * envIridescence;
         vec3 iridescentLight = light.color * interferenceRGB * localIridescence;
@@ -247,7 +228,7 @@ void main()
         result = ambient + diffuse + specular;
     }
 
-    float alpha = debugThickness > 0.5f ? clamp(filmAlpha + fresnel * 0.36 * filmFresnelStrength, filmAlpha, 0.70) : 1.0;
+    float alpha = debugThickness > 0.5f ? clamp(filmAlpha + (1.0f - thinFilmTransmission) * 0.55 * filmFresnelStrength + fresnel * 0.18, filmAlpha, 0.85) : 1.0;
     FragColor = vec4(result, alpha);
 
 }
