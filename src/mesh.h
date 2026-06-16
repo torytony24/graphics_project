@@ -48,11 +48,9 @@ public:
         setupMesh();
     }
 
-    // ������Ʈ�� ���� �����͸� GPU�� ���ε�
     void updateVertexBuffer()
     {
         glBindBuffer(GL_ARRAY_BUFFER, VBO);
-        // glBufferSubData: ���� ���ۿ� �� �����͸� ���
         glBufferSubData(GL_ARRAY_BUFFER, 0, vertices.size() * sizeof(Vertex), &vertices[0]);
         glBindBuffer(GL_ARRAY_BUFFER, 0);
     }

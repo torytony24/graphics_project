@@ -95,7 +95,6 @@ float opticalPathDifference(float h, float cosTheta, float n)
 
 vec3 sampleThinFilmLUT(float hNm, float cosTheta)
 {
-    // U 좌표에 deltaNm 대신 두께(hNm)를 직접 사용합니다.
     vec2 uv = vec2(clamp(hNm / filmDeltaMax, 0.0, 1.0), clamp(cosTheta, 0.0, 1.0));
     vec3 lutColor = texture(thinFilmLUT, uv).rgb;
     return lutColor;
@@ -146,8 +145,6 @@ void main()
 {
     vec3 color = texture(material.diffuseSampler, TexCoord).rgb;
 
-    // on-off by key 3 (useLighting). 
-    // if useLighting is 0, return diffuse value without considering any lighting.(DO NOT CHANGE)
     if (useLighting < 0.5f){
         FragColor = vec4(color, 1.0); 
         return; 
@@ -196,10 +193,7 @@ void main()
         float deltaNm = opticalPathDifference(hNm, cosTheta, filmRefractiveIndex);
         vec3 interferenceRGB = sampleThinFilmLUT(hNm, cosTheta);
 
-        // -----------------------------------------------------
-        // 여기서부터 교체하세요 (기존의 reflectedDir, refractedDir 선언부 덮어쓰기)
-        // -----------------------------------------------------
-        vec3 offset = vec3(0.015, 0.0, 0.0); // 색수차 강도
+        vec3 offset = vec3(0.015, 0.0, 0.0);
 
         vec3 reflectedDir = reflect(-viewDir, normal);
         vec3 envReflection;
@@ -216,11 +210,6 @@ void main()
         envRefraction.r = texture(skyboxTexture, normalize(refractedDir + offset)).r;
         envRefraction.g = texture(skyboxTexture, refractedDir).g;
         envRefraction.b = texture(skyboxTexture, normalize(refractedDir - offset)).b;
-        // -----------------------------------------------------
-        // 여기까지 교체 완료. 이 아래는 기존 vec3 halfDir = ... 로 이어지면 됩니다.
-        // -----------------------------------------------------
-
-
 
 
         vec3 halfDir = normalize(lightDir + viewDir);

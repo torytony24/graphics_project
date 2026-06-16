@@ -41,8 +41,7 @@ Mesh createIcosphereMesh(unsigned int subdivisions)
     std::vector<Vertex> vertices;
     std::vector<unsigned int> indices;
 
-    // 1. 초기 정이십면체(Icosahedron) 생성
-    const float t = (1.0f + std::sqrt(5.0f)) / 2.0f; // 황금비
+    const float t = (1.0f + std::sqrt(5.0f)) / 2.0f;
 
     std::vector<glm::vec3> baseVertices = {
         {-1,  t,  0}, { 1,  t,  0}, {-1, -t,  0}, { 1, -t,  0},
@@ -55,18 +54,16 @@ Mesh createIcosphereMesh(unsigned int subdivisions)
         v.Position = glm::normalize(p);
         v.Normal = v.Position;
 
-        // 구면 좌표계를 이용한 기본 UV
         float u = 0.5f + std::atan2(v.Position.z, v.Position.x) / (2.0f * glm::pi<float>());
         float v_tex = 0.5f - std::asin(v.Position.y) / glm::pi<float>();
         v.TexCoords = glm::vec2(u, v_tex);
 
-        // 극점 처리(Gimbal lock 방지)를 포함한 탄젠트 벡터 계산
         glm::vec3 up = glm::vec3(0.0f, 1.0f, 0.0f);
         if (std::abs(v.Normal.y) > 0.999f) up = glm::vec3(1.0f, 0.0f, 0.0f);
         v.Tangent = glm::normalize(glm::cross(up, v.Normal));
 
         v.Color = glm::vec3(1.0f);
-        v.Thickness = 0.05f; // 초기 두께 세팅
+        v.Thickness = 0.05f;
         vertices.push_back(v);
         return vertices.size() - 1;
         };
@@ -82,12 +79,10 @@ Mesh createIcosphereMesh(unsigned int subdivisions)
         4, 9, 5,  2, 4, 11,  6, 2, 10,  8, 6, 7,  9, 8, 1
     };
 
-    // 2. 표면 분할(Subdivision) 및 중복 정점 병합(Welding)
     std::map<Edge, unsigned int> midPointCache;
 
     auto getMidPoint = [&](unsigned int v1, unsigned int v2) -> unsigned int {
         Edge edge(v1, v2);
-        // 이미 계산된 중간점이 있으면 캐시에서 반환 (완벽한 구조적 공유)
         if (midPointCache.find(edge) != midPointCache.end()) {
             return midPointCache[edge];
         }
@@ -200,7 +195,7 @@ int main()
 
     // build and compile our shader program
     // ------------------------------------
-    Shader lightingShader("../shaders/shader_lighting.vs", "../shaders/shader_lighting.fs"); // you can name your shader files however you like
+    Shader lightingShader("../shaders/shader_lighting.vs", "../shaders/shader_lighting.fs"); 
     Shader shadowShader("../shaders/shadow.vs", "../shaders/shadow.fs");
     Shader skyboxShader("../shaders/shader_skybox.vs", "../shaders/shader_skybox.fs");
     Shader wireframeShader("../shaders/wireframe.vs", "../shaders/wireframe.fs");
@@ -212,22 +207,15 @@ int main()
     yourOwnModel.specular = nullptr;
 
     yourOwnModel.VAO = yourOwnModel.mesh.VAO;
-    yourOwnModel.mesh.setupMesh(); // 꼭 호출해서 버퍼를 GPU에 묶어주어야 합니다.
+    yourOwnModel.mesh.setupMesh();
 
     PBDSolver* spherePBD = new PBDSolver(&yourOwnModel.mesh);
     spherePBD->initialize();
 
 
-
-    // Add entities to scene.
-    // you can change the position/orientation.
     Scene scene;
-
-    // add your model's entity here!
     Entity* sphereEntity = new Entity(&yourOwnModel, glm::vec3(-1, 1, -1), 0.0f, 0.0f, 0.0f, 1.0);
     scene.addEntity(sphereEntity);
-
-    // define depth texture
     DepthMapTexture depth = DepthMapTexture(SHADOW_WIDTH, SHADOW_HEIGHT);
 
 
@@ -278,7 +266,7 @@ int main()
     lightingShader.setInt("depthMapSampler", 3);
     lightingShader.setInt("skyboxTexture", 4);
     lightingShader.setInt("thinFilmLUT", 5);
-    lightingShader.setFloat("material.shininess", 64.f);    // set shininess to constant value.
+    lightingShader.setFloat("material.shininess", 64.f);
 
 
     skyboxShader.use();
@@ -314,7 +302,6 @@ int main()
         processInput(window, &sun);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-		//glm::vec3 gravity = glm::vec3(0.0f, -9.81f, 0.0f);
         glm::vec3 gravity = glm::vec3(0.0f, 0.0f, 0.0f);
         const int SUB_STEPS = 2;
 
@@ -460,12 +447,11 @@ int main()
             glDisable(GL_CULL_FACE);
             glLineWidth(1.0f);
 
-            // 스카이박스에서 유실된 카메라 뷰 행렬을 다시 온전하게 받아옵니다.
             view = camera.GetViewMatrix();
 
             wireframeShader.use();
             wireframeShader.setMat4("projection", projection);
-            wireframeShader.setMat4("view", view); // 정상적인 뷰 행렬 적용
+            wireframeShader.setMat4("view", view); 
 
             auto itSphere = scene.entities.find(&yourOwnModel);
             if (itSphere != scene.entities.end()) {

@@ -34,7 +34,6 @@ void PBDSolver::initialize() {
         p.acceleration = glm::vec3(0.0f);
         p.invMass = 1.0f;
 
-        // 얇은 막 간섭을 위한 노이즈 섞인 초기 두께
         float seed = std::sin(9.0f * p.position.x + 3.0f * p.position.y) +
             0.6f * std::sin(11.0f * p.position.z - 4.0f * p.position.x);
         p.thickness = 0.05f + 0.01f * seed;
@@ -84,7 +83,7 @@ void PBDSolver::integrate(float dt, float damping) {
         glm::vec3 newPos = p.position + velocity + p.acceleration * dt2;
         p.prevPosition = p.position;
         p.position = newPos;
-        p.acceleration = glm::vec3(0.0f); // 명시적 힘(Force) 초기화
+        p.acceleration = glm::vec3(0.0f); 
     }
 }
 
@@ -93,15 +92,10 @@ void PBDSolver::integrate(float dt, float damping) {
 void PBDSolver::solveConstraints(int iterations) {
     const float volumeCompliance = 1e-10f;
 
-    // Jacobi 방식은 연결된 간선 수만큼 나누어지므로(보통 5~6개), 
-    // 0.8 정도로 높게 주어야 적당히 출렁이는 유체 막 느낌이 납니다.
     const float edgeStiffness = 0.8f;
 
     for (int it = 0; it < iterations; ++it) {
 
-        // ==========================================================
-        // 1. 자코비(Jacobi) 구조 제약 (표면 매끄러움 유지 & 유령 회전력 완벽 방지)
-        // ==========================================================
         std::vector<glm::vec3> edgeCorr(m_particles.size(), glm::vec3(0.0f));
         std::vector<int> edgeCounts(m_particles.size(), 0);
 
@@ -115,7 +109,6 @@ void PBDSolver::solveConstraints(int iterations) {
                 float diff = (len - e.restLength) / len;
                 glm::vec3 corr = delta * diff * edgeStiffness * 0.5f;
 
-                // 위치를 즉시 바꾸지 않고 보정량만 누적합니다.
                 edgeCorr[e.a] += corr;
                 edgeCorr[e.b] -= corr;
                 edgeCounts[e.a]++;
@@ -123,17 +116,12 @@ void PBDSolver::solveConstraints(int iterations) {
             }
         }
 
-        // 루프가 끝난 뒤 모든 정점을 '동시에' 업데이트합니다.
         for (size_t i = 0; i < m_particles.size(); ++i) {
             if (edgeCounts[i] > 0) {
-                // 간선 개수로 나누어 평균을 내면 시스템이 절대 폭발하지 않습니다.
                 m_particles[i].position += edgeCorr[i] / (float)edgeCounts[i];
             }
         }
 
-        // ==========================================================
-        // 2. 전역 부피 제약 (공기 압력 유지)
-        // ==========================================================
         float currentVolume = computeMeshVolume();
         float C_vol = currentVolume - m_initialVolume;
 
@@ -195,41 +183,31 @@ void PBDSolver::recomputeNormals() {
 void PBDSolver::integrateThickness(float dt) {
     if (dt <= 0.0f) return;
 
-    // 1. Graph Laplacian 계산 (Topological Laplacian)
-    // 인접한 정점들 간의 두께 차이를 누적하여 표면 위의 확산/파동 성분을 구합니다.
     std::vector<float> laplacians(m_particles.size(), 0.0f);
 
     for (const auto& e : m_edges) {
         float hA = m_particles[e.a].thickness;
         float hB = m_particles[e.b].thickness;
 
-        // 질량(액체) 보존 법칙에 따라 서로 두께를 교환
         float diff = hB - hA;
         laplacians[e.a] += diff;
         laplacians[e.b] -= diff;
     }
 
-    // 2. 2차 동역학계 적분 (파동 방정식)
-    float c2 = 100.0f;     // 파동 전파 속도 (시각적 일렁임의 속도 결정)
-    float k_damp = 0.0f;   // 감쇠 계수 (파동이 서서히 잦아들게 함)
+    float c2 = 100.0f; 
+    float k_damp = 0.0f; 
 
     for (size_t i = 0; i < m_particles.size(); ++i) {
         auto& p = m_particles[i];
 
-        // 가속도 계산: a = c^2 * ∇^2 h
         float accel = c2 * laplacians[i];
 
-        // 속도 적분 및 감쇠 적용
         p.thicknessVelocity += accel * dt;
         p.thicknessVelocity *= (1.0f - k_damp);
 
-        // 위치(두께) 적분
         p.prevThickness = p.thickness;
         p.thickness += p.thicknessVelocity * dt;
 
-        // 3. 렌더링 안정성을 위한 Clamping
-        // 광학적 간섭 무늬가 잘 보이는 나노미터(nm) 범위 밖으로 벗어나지 않도록 제한
-        // (shader_lighting.fs의 LUT 텍스처 범위와 호환)
         p.thickness = std::max(0.012f, std::min(p.thickness, 0.095f));
     }
 }
@@ -237,89 +215,40 @@ void PBDSolver::integrateThickness(float dt) {
 void PBDSolver::step(float dt, int solverIterations, const glm::vec3& gravity, float damping) {
     m_time += dt;
 
-    // 1. 비눗방울의 현재 무게중심 계산
     glm::vec3 centerOfMass(0.0f);
     for (const auto& p : m_particles) {
         centerOfMass += p.position;
     }
     centerOfMass /= (float)m_particles.size();
 
-    // =======================================================
-    // 2. 부드러운 상하 부유(Hovering) 효과
-    // =======================================================
-    // 시간에 따라 Y축 기준 위아래로 아주 천천히(-0.1 ~ +0.1 범위) 움직입니다.
     float hoverY = std::sin(m_time * 0.8f) * 0.01f;
     glm::vec3 targetCenter(0.0f, hoverY, 0.0f);
 
-    // 좌우로 흔들리지 않도록 복원력 강도를 조금 올려서 목표 지점을 꽉 잡게 합니다.
+
     float stiffness = 5.0f;
     glm::vec3 restoreForce = (targetCenter - centerOfMass) * stiffness;
 
-    // =======================================================
-    // 3. 표면의 미세한 꿀렁임 (난기류)
-    // =======================================================
-    // 전체를 밀어내는 것이 아니라 표면만 미세하게 떨리도록 강도를 확 낮춥니다.
     float windStrength = 0.02f;
     for (auto& p : m_particles) {
-        // 공간 주파수(2.0f)를 높여서 파티클마다 받는 힘의 방향이 다르게(수축/팽창) 만듭니다.
-        // 시간 주파수(0.5f)는 낮춰서 천천히 일렁이게 합니다.
         float windX = std::sin(p.position.y * 2.0f + m_time * 0.5f);
         float windY = std::cos(p.position.z * 2.0f + m_time * 0.4f);
         float windZ = std::cos(p.position.x * 2.0f + m_time * 0.6f);
 
         glm::vec3 windForce = glm::vec3(windX, windY, windZ) * windStrength;
 
-        // 중력, 상하 복원력, 표면 난기류를 가속도에 누적
         p.acceleration += gravity + windForce + restoreForce;
     }
 
-    /*
-    // =======================================================
-    // 4. 평균 곡률(Mean Curvature) 기반 표면 장력 (Surface Tension)
-    // =======================================================
-    // 4-1. 모든 정점에 대해 이웃 정점들의 위치 합(Umbrella)을 구합니다.
-    std::vector<glm::vec3> umbrella(m_particles.size(), glm::vec3(0.0f));
-    std::vector<int> neighborCount(m_particles.size(), 0);
 
-    for (const auto& e : m_edges) {
-        umbrella[e.a] += m_particles[e.b].position;
-        umbrella[e.b] += m_particles[e.a].position;
-        neighborCount[e.a]++;
-        neighborCount[e.b]++;
-    }
-
-    // 4-2. 표면 장력을 가속도(힘)로 적용합니다.
-    float surfaceTension = 80.0f; // 표면장력 강도 (물방울의 쫀쫀함 결정)
-    for (size_t i = 0; i < m_particles.size(); ++i) {
-        if (neighborCount[i] > 0) {
-            glm::vec3 centroid = umbrella[i] / (float)neighborCount[i];
-
-            // 이웃들의 평균 위치를 향하는 벡터가 바로 곡률 법선(Curvature Normal)입니다.
-            // 뾰족하게 튀어나온 곳일수록 이 벡터가 커져서 강하게 안으로 당깁니다.
-            glm::vec3 curvatureNormal = centroid - m_particles[i].position;
-
-            // 표면장력(곡률 흐름)을 가속도에 누적
-            m_particles[i].acceleration += curvatureNormal * surfaceTension;
-        }
-    }
-    // =======================================================
-    */
-
-    // =======================================================
-    // 4. 코탄젠트 라플라스-벨트라미 기반 완벽한 표면 장력 (Cotangent Operator)
-    // =======================================================
-    // 기하학적 찌그러짐을 상쇄하는 진정한 표면적 최소화(Surface Area Gradient) 알고리즘
     std::vector<glm::vec3> laplaceBeltrami(m_particles.size(), glm::vec3(0.0f));
 
-    // 안전한 코탄젠트 계산을 위한 람다 함수 (Degenerate 삼각형으로 인한 물리 폭발 방지)
     auto safeCot = [](const glm::vec3& a, const glm::vec3& b) -> float {
         float dotP = glm::dot(a, b);
         float crossLen = glm::length(glm::cross(a, b));
         if (crossLen < 1e-6f) return 0.0f;
-        return glm::clamp(dotP / crossLen, -10.0f, 10.0f); // 극단적 텐션 방지
+        return glm::clamp(dotP / crossLen, -10.0f, 10.0f);
         };
 
-    // Half-edge 구조 없이 삼각형(Face) 단위로 순회하며 그래디언트 누적
     for (size_t i = 0; i + 2 < m_mesh->indices.size(); i += 3) {
         unsigned int i0 = m_mesh->indices[i];
         unsigned int i1 = m_mesh->indices[i + 1];
@@ -329,30 +258,23 @@ void PBDSolver::step(float dt, int solverIterations, const glm::vec3& gravity, f
         glm::vec3 p1 = m_particles[i1].position;
         glm::vec3 p2 = m_particles[i2].position;
 
-        // 삼각형의 세 변을 나타내는 벡터
         glm::vec3 v01 = p1 - p0;
         glm::vec3 v12 = p2 - p1;
         glm::vec3 v20 = p0 - p2;
 
-        // 각 꼭지점에서의 코탄젠트 계산 (내적 / 외적크기)
-        float cot0 = safeCot(v01, -v20); // p0에서의 각도
-        float cot1 = safeCot(v12, -v01); // p1에서의 각도
-        float cot2 = safeCot(v20, -v12); // p2에서의 각도
+        float cot0 = safeCot(v01, -v20); 
+        float cot1 = safeCot(v12, -v01); 
+        float cot2 = safeCot(v20, -v12); 
 
-        // ∇A (표면적 그래디언트) = 0.5 * sum(cot_alpha + cot_beta) * (p_j - p_i)
-        // 각 정점에 대해 인접한 변을 따라 코탄젠트 가중치 벡터를 더해줍니다.
         laplaceBeltrami[i0] += 0.5f * (cot2 * v01 + cot1 * (-v20));
         laplaceBeltrami[i1] += 0.5f * (cot0 * v12 + cot2 * (-v01));
         laplaceBeltrami[i2] += 0.5f * (cot1 * v20 + cot0 * (-v12));
     }
 
-    // 구해진 라플라스-벨트라미 그래디언트를 가속도(표면 장력)로 환산하여 적용
-    float surfaceTension = 15.0f; // 필요에 따라 10.0 ~ 50.0 사이로 조절하세요.
+    float surfaceTension = 15.0f;   // surface tension 15-25
     for (size_t i = 0; i < m_particles.size(); ++i) {
-        // 면적을 최소화하려는 힘이므로 벡터 방향을 그대로 가속도로 사용합니다.
         m_particles[i].acceleration += laplaceBeltrami[i] * surfaceTension;
     }
-    // =======================================================
 
 
     integrate(dt, damping);
@@ -365,7 +287,7 @@ void PBDSolver::applyToMesh() {
     if (!m_mesh) return;
     for (size_t i = 0; i < m_particles.size(); ++i) {
         m_mesh->vertices[i].Position = m_particles[i].position;
-        m_mesh->vertices[i].Thickness = m_particles[i].thickness; // 순수 두께만 전달
+        m_mesh->vertices[i].Thickness = m_particles[i].thickness; 
     }
     m_mesh->updateVertexBuffer();
 }
