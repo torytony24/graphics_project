@@ -282,10 +282,20 @@ int main()
     const float FIXED_DT = 1.0f / 60.0f;
     const float MAX_DT = 0.1f;
 
+    static double pressTime = 0.0;
+
     while (!glfwWindowShouldClose(window))
     {
-        if (glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS) {
-            spherePBD->addImpulse(10, glm::vec3(5.0f, 2.0f, 0.0f));
+        if (glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS && !isKeyboardDone[GLFW_KEY_SPACE]) {
+            isKeyboardDone[GLFW_KEY_SPACE] = true;
+            if (spherePBD) {
+                pressTime = glfwGetTime();
+            }
+        }
+        if (glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_RELEASE && isKeyboardDone[GLFW_KEY_SPACE]) {
+            isKeyboardDone[GLFW_KEY_SPACE] = false;
+            double heldTime = (glfwGetTime() - pressTime) * 300;
+            spherePBD->addImpulse(10, glm::vec3(5.0f * heldTime, 2.0f * heldTime, 0.0f * heldTime));
         }
 
         float currentTime = glfwGetTime();
@@ -497,6 +507,10 @@ void processInput(GLFWwindow* window, DirectionalLight* sun)
         camera.ProcessKeyboard(LEFT, deltaTime);
     if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS)
         camera.ProcessKeyboard(RIGHT, deltaTime);
+    if (glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS)
+        camera.ProcessKeyboard(UP, deltaTime);
+    if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS)
+        camera.ProcessKeyboard(DOWN, deltaTime);
 
     if (glfwGetKey(window, GLFW_KEY_F) == GLFW_PRESS && !isKeyboardDone[GLFW_KEY_F]) {
         showWireframe = !showWireframe;
